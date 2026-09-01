@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.deepeval/
+junit.xml
+
+# Secrets and local config — never commit
+.env
+users.yaml
+
+# Internal product spec — deliberately kept out of this public repo.
+# Referenced by the design specs; obtain it from the internal platform repo.
+docs/product.md
+
+# Evaluation run artifacts and the disposable dashboard index
+pqa-eval/runs/
+*.db
+*.db-wal
+*.db-shm
+
+# OS / editor
+.DS_Store
+*.swp

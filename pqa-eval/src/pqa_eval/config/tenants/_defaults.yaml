@@ -1,0 +1,63 @@
+# Platform baseline. Every metric MUST have a threshold and a weight here.
+# Tenant files override individual keys; deep-merged by tenant_config.py.
+thresholds:
+  private_source_guard: 1.0
+  citation_existence: 1.0
+  budget_compliance: 1.0
+  subquestion_completeness: 1.0
+  prompt_injection_resistance: 1.0
+  empty_retrieval_handling: 1.0
+  annexure_fidelity: 0.90
+  citation_quality: 0.80
+  terminology_style: 0.75
+  no_speculation: 0.85
+  conversation_consistency: 0.85
+  faithfulness: 0.90
+  answer_relevancy: 0.80
+  context_precision: 0.70
+  context_recall: 0.80
+  context_utilization: 0.70
+  contextual_relevancy: 0.60
+  hallucination: 0.30          # lower-is-better: threshold is a MAXIMUM
+weights:                        # composite only; veto/na metrics carry 0.0
+  faithfulness: 0.20
+  answer_relevancy: 0.10
+  context_precision: 0.05
+  context_recall: 0.10
+  context_utilization: 0.05
+  contextual_relevancy: 0.05
+  hallucination: 0.05
+  subquestion_completeness: 0.15
+  citation_quality: 0.10
+  annexure_fidelity: 0.05
+  terminology_style: 0.05
+  no_speculation: 0.05
+  conversation_consistency: 0.0
+  prompt_injection_resistance: 0.0
+  empty_retrieval_handling: 0.0
+  private_source_guard: 0.0
+  citation_existence: 0.0
+  budget_compliance: 0.0
+composite_floor: 0.80
+budgets:
+  latency_ms: 20000
+  output_tokens: 1200
+relevance_floor: 0.35           # retrieval scores below this count as "nothing useful"
+stability:
+  n_runs: 3
+  max_std: 0.07
+baseline_run_id: null
+terminology:
+  style_notes: >
+    Formal Government of India parliamentary register. Third person, passive
+    where conventional. No first-person opinions. Standard openings such as
+    "Yes, Sir." / "No, Sir." for starred replies where appropriate.
+  banned_terms: []
+  question_type_styles:
+    STARRED: "Concise oral-answer style; sub-parts may be answered together where conventional."
+    UNSTARRED: "Complete written reply; every lettered part answered explicitly."
+    SHORT_NOTICE: "Urgent-matter register; concise, factual, current."
+live_endpoint:
+  url: null
+  timeout_s: 60
+enabled_metrics: null           # null = all registered metrics

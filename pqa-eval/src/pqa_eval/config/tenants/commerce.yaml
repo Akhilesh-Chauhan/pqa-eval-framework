@@ -1,0 +1,8 @@
+tenant_id: commerce
+display_name: Ministry of Commerce and Industry
+thresholds:
+  faithfulness: 0.95            # reference tenant: strictest grounding
+composite_floor: 0.85
+terminology:
+  banned_terms: ["ballpark", "roughly speaking", "I think", "probably"]
+baseline_run_id: null           # set after the first accepted run

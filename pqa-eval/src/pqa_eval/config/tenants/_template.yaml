@@ -1,0 +1,12 @@
+# Copy to <tenant_id>.yaml. Only override what differs from _defaults.yaml.
+tenant_id: CHANGE_ME
+display_name: CHANGE ME
+# thresholds:
+#   faithfulness: 0.92
+# composite_floor: 0.80
+# budgets:
+#   latency_ms: 20000
+#   output_tokens: 1200
+# live_endpoint:
+#   url: https://tenant.example.gov.in/ai/draft
+#   timeout_s: 60

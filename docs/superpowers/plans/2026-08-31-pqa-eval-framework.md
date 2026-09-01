@@ -673,6 +673,7 @@ git add -A && git commit -m "feat: fail-closed TenantContext guard and exception
 - Produces:
   - `settings.get_settings() -> Settings` — dataclass, read fresh from env each call (no caching, so tests can monkeypatch env). Fields: `provider: str`, `aws_region: str`, `judge_model_id: str`, `embed_model_id: str`, `data_dir: Path`, `runs_dir: Path`, `config_dir: Path`, `max_workers: int`, `judge_max_context_chars: int`.
   - `tenant_config.TenantConfig` pydantic model; `get_tenant_config(tenant_id) -> TenantConfig`; `list_tenant_ids() -> list[str]` (files under config_dir not starting with `_`).
+  - **Implemented in Task 4:** `TenantConfig` carries two `model_validator(mode="after")` checks that Task 24's docs promise — (a) the `thresholds` and `weights` key sets must be identical, so a mis-typed metric name fails loudly instead of binding nothing; (b) every name in `enabled_metrics` must be a known metric.
   - `thresholds.resolve_threshold(metric_name: str) -> float` and `thresholds.resolve_weight(metric_name: str) -> float` — both use `TenantContext.current()`; resolution order: env override → tenant yaml → `_defaults.yaml`; unknown metric raises `KeyError` with a message listing known names.
 
 - [ ] **Step 1: Write the failing tests**

@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pqa-eval"
+version = "0.1.0"
+description = "Multi-tenant evaluation framework for the PQA Parliament Chatbot platform"
+requires-python = ">=3.10"
+dependencies = [
+    "deepeval~=4.2",
+    "ragas~=0.4",
+    "pydantic~=2.9",
+    "boto3~=1.35",
+    "langchain-aws~=0.2",
+    "langchain-core~=0.3",
+    "pyyaml~=6.0",
+    "pandas~=2.2",
+    "pyarrow~=17.0",
+    "python-dotenv~=1.0",
+    "requests~=2.32",
+]
+
+[project.optional-dependencies]
+dev = ["pytest~=8.3", "ruff~=0.6"]
+
+[project.scripts]
+pqa-eval = "pqa_eval.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "judge: needs a real judge LLM provider (skipped when PQA_EVAL_PROVIDER=stub)",
+    "no_ctx: test manages its own TenantContext (opts out of the edge-case autouse fixture)",
+]

@@ -6,14 +6,15 @@
 
 **Architecture:** A `TenantContext` contextvar guard gates every dataset load, metric run, client call, and report write. Metrics are tiered by failure mode: Tier 0 deterministic (veto power, no LLM), Tier 1 explicit gate-then-judge DAGs, Tier 2 GEval rubrics, plus RAGAS/DeepEval standard RAG metrics — all composed by a runner that short-circuits on veto and applies per-metric thresholds AND a composite floor. The system under test is reached through a `PQADraftClient` ABC with a deterministic capture-replay implementation for CI and an HTTP implementation for live runs.
 
-**Tech Stack:** Python 3.11+, deepeval ~=3.4, ragas ~=0.3, pydantic ~=2.9, boto3 + langchain-aws (Bedrock judge, ap-south-1), pyyaml, pandas + pyarrow, pytest ~=8.3.
+**Tech Stack:** Python 3.10+, deepeval ~=4.2, ragas ~=0.4, pydantic ~=2.9, boto3 + langchain-aws (Bedrock judge, ap-south-1), pyyaml, pandas + pyarrow, pytest ~=8.3.
 
 **Spec:** `docs/superpowers/specs/2026-08-31-pqa-eval-framework-design.md` — read it before starting any task. The spec is authoritative on WHY; this plan is authoritative on WHAT and HOW.
 
 ## Global Constraints
 
 - Everything lives under `pqa-eval/` inside the repo root (`/home/user/NeGD/Deep Eval/PQA Platform`), which is the git repo for `github.com/Akhilesh-Chauhan/pqa-eval-framework`. Repo root already has `docs/` (product spec, design specs, this plan), `.gitignore`, and git initialised — **Task 1 must NOT run `git init` again**; it starts at the scaffold step.
-- Python >= 3.11. Package name `pqa_eval`, src layout (`pqa-eval/src/pqa_eval/`).
+- Python >= 3.10. Package name `pqa_eval`, src layout (`pqa-eval/src/pqa_eval/`).
+- **All work happens in a virtualenv at `pqa-eval/.venv`** (gitignored). The machine's system Python is shared with the DoE Chatbot RAGAS pipeline, which pins `ragas 0.2.15` / `deepeval 4.0.7`; installing this project's dependencies system-wide would break it. Every `pip`/`pytest`/`pqa-eval` command runs from that venv.
 - The judge LLM defaults to AWS Bedrock in `ap-south-1`. **Never** default to OpenAI. Provider selected by env `PQA_EVAL_PROVIDER` = `bedrock | openai | stub` (default `stub` so tests run with no cloud access; `.env.example` documents `bedrock` for real runs).
 - Every tenant-bearing operation requires an active `TenantContext`; violations raise `NoTenantContextError` / `CrossTenantViolation`. Fail closed, always.
 - Canonical metric names (used in YAML thresholds, weights, reports, `expected_failure_metrics` — exact strings): `private_source_guard`, `citation_existence`, `budget_compliance`, `subquestion_completeness`, `prompt_injection_resistance`, `annexure_fidelity`, `empty_retrieval_handling`, `citation_quality`, `terminology_style`, `no_speculation`, `conversation_consistency`, `faithfulness`, `answer_relevancy`, `context_precision`, `context_recall`, `context_utilization`, `contextual_relevancy`, `hallucination`.
@@ -92,10 +93,10 @@ build-backend = "setuptools.build_meta"
 name = "pqa-eval"
 version = "0.1.0"
 description = "Multi-tenant evaluation framework for the PQA Parliament Chatbot platform"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
-    "deepeval~=3.4",
-    "ragas~=0.3",
+    "deepeval~=4.2",
+    "ragas~=0.4",
     "pydantic~=2.9",
     "boto3~=1.35",
     "langchain-aws~=0.2",
@@ -162,11 +163,21 @@ def test_package_importable_with_version():
 
 - [ ] **Step 3: Run test to verify it fails**
 
-Run: `cd pqa-eval && pip install -e ".[dev]" && pytest tests/unit/test_package.py -v` — if install succeeded the test passes immediately; the failure case here is the install itself. Fix until both install and test pass.
+Create the venv and install into it (NEVER into system Python — it is shared with the DoE pipeline):
+
+```bash
+cd "/home/user/NeGD/Deep Eval/PQA Platform/pqa-eval"
+python3 -m venv .venv
+.venv/bin/python -m pip install -q --upgrade pip
+.venv/bin/python -m pip install -e ".[dev]"
+.venv/bin/python -m pytest tests/unit/test_package.py -v
+```
+
+If install succeeded the test passes immediately; the failure case here is the install itself. Fix until both install and test pass. Every later task's `pytest` means `.venv/bin/python -m pytest`.
 
 - [ ] **Step 4: Run full test command to verify green**
 
-Run: `pytest tests/ -v` — Expected: 1 passed.
+Run: `.venv/bin/python -m pytest tests/ -v` — Expected: 1 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -6938,7 +6949,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: "3.11" }
+        with: { python-version: "3.11" }  # CI runs the deployment floor; local dev is 3.10
       - run: pip install -e ".[dev]"
       - name: Full offline suite — Commerce gate, all edge cases, stub judge
         env: { PQA_EVAL_PROVIDER: stub }
@@ -6956,7 +6967,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: "3.11" }
+        with: { python-version: "3.11" }  # CI runs the deployment floor; local dev is 3.10
       - run: pip install -e ".[dev]"
       - name: Evaluate all tenants (static captures, Bedrock judge)
         env:

@@ -1,0 +1,13 @@
+# Compatible-release pins. After first install on the gov-cloud mirror, freeze: pip freeze > requirements.lock
+deepeval~=4.2
+ragas~=0.4
+pydantic~=2.9
+boto3~=1.35
+langchain-aws~=0.2
+langchain-core~=0.3
+pyyaml~=6.0
+pandas~=2.2
+pyarrow~=17.0
+python-dotenv~=1.0
+requests~=2.32
+pytest~=8.3

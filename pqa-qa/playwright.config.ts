@@ -9,7 +9,7 @@ export default defineConfig({
     ['list'],
     ['html', { outputFolder: 'playwright-report', open: 'never' }],
     ['junit', { outputFile: 'playwright-report/junit.xml' }],
-    // ['./src/support/gap-reporter.ts'],  <- enabled in Task 7
+    ['./src/support/gap-reporter.ts'],
   ],
   projects: [
     // Support-layer unit tests. No network, no environment, no credentials.

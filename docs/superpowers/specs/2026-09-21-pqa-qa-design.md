@@ -5,6 +5,7 @@
 **Owner:** NeGD PQA Platform — QA / Security workstream
 **Tracker:** S1-QA-01 (Fri 25 Sep), S2-QA-01 (Wed 30 Sep, gate), S4-QA-01 (Fri 16 Oct, gate)
 **Scope:** A browser, API and isolation test suite for the PQA multi-tenant Parliamentary Question platform, delivered as `pqa-qa/` inside this repository alongside `pqa-eval/`.
+**Target:** the shared deployed environment at `https://pqa.myscheme.in/`. **Non-destructive testing only** — see §3 and §9.
 
 ---
 
@@ -44,18 +45,20 @@ Two dependency facts set the pace:
 - **This repository is private.** Made private on 2026-09-21, before any of this work was committed, with zero forks and zero stars at the time. That is a precondition, not a detail: §10's gap register is a dated list of which isolation attacks currently succeed against a Government of India platform, pre-VAPT (X-01). It must not become public. If the repository is ever made public again, `inventory/` must be excised first.
 - **Scope is the demo path**, defined by S1-UX-01: login, dashboard, PQ intake, drafting, review, export. Routes outside it are inventoried and flagged `S1-OUT`, not tested.
 - **WebKit cannot run** on the team's Linux hosts (documented in `pqa-builder/CLAUDE.md` §11). Chromium and Firefox only.
-- **Two services have no local environment.** `apps/rag-service` and `apps/ingestion-service` have no Python virtualenv on the current host, so ports 8002 and 8001 are dark. The suite must report their tests as skipped-with-reason, never as passing (§5.3).
+- **The system under test is a shared deployed environment**, not a laptop. `https://pqa.myscheme.in/` is used by the whole team and stands nine days from the CEO demo. The suite reaches it over HTTPS only; there is no filesystem, no `.env` and no service console.
+- **Non-destructive only.** Adversarial probes attempt unauthorised access but create, modify and delete nothing. No tenant provisioning, no schema drops, no PQ records, no `migrate-all`. This is a hard boundary, and §9 records what it costs.
+- **No infrastructure credentials.** S3, OpenSearch and Postgres credentials for the deployed environment are not available to QA. Families 4, 5 and 8 are therefore *not measured* rather than passing or failing (§7.4, §7.5, §7.8).
 
 ## 4. Decisions
 
 | Decision | Choice | Rationale |
 |---|---|---|
 | Suite technology | One TypeScript package, Playwright as runner for all three layers | The fixture layer — QA tenant, four personas, PQ factory — is needed identically by isolation, API and browser tests. Playwright's `page` and `request` share a `browserContext`, so an API assertion can read state a browser journey just created, with one login. A polyglot split pays for that layer twice. |
-| Test-data strategy | Dedicated disposable `qa` tenant; Commerce read-only | `product.md` makes Commerce the reference implementation that must not regress. Destructive lifecycle tests run in a tenant that is dropped at teardown; Commerce gets read-only assertions only. |
+| Test-data strategy | Non-destructive throughout — nothing is created, modified or deleted | The target is shared infrastructure nine days before the CEO demo, and `product.md` makes Commerce a reference implementation that must not regress. Adversarial probes attempt unauthorised access and assert on the refusal. The cost is stated in §9: the two-tenant lifecycle S2-QA-01 gates on cannot be automated under this rule. |
 | Placement | `pqa-qa/` in this repository, beside `pqa-eval/` | `pqa-builder` is read-only. This repository already owns platform quality tooling and is owned by the S1-QA-01 owner. |
 | Failure semantics | Three states: regression, tracked gap, closed gap | S1-QA-01's deliverable is deliberately red. A binary pass/fail run cannot distinguish "Ankur has not fixed this yet" from "someone broke something today", and a suite that is permanently red stops being read within a week. |
 | Infrastructure probes | Direct S3 / OpenSearch / Postgres clients inside the same suite | Prefix escape and wrong-index are not HTTP concerns. Splitting them into a separate tool would split the gap register that S1-DO-02 works from. |
-| Run target | Local-first, CI-ready | No CI configuration exists anywhere in `pqa-builder` today. The suite ships a `.gitlab-ci.yml` here for adoption when a pipeline exists (S3-DO-01). |
+| Run target | Remote-first, environment-driven | The system under test is deployed. Every URL and credential comes from the environment, so the same suite runs unchanged against this environment, a laptop, or the production topology S4-QA-01 requires. No CI configuration exists in `pqa-builder`; the suite ships its own `.gitlab-ci.yml`. |
 
 ### 4.1 Rejected alternatives
 
@@ -83,9 +86,9 @@ pqa-qa/
 └── src/
     ├── support/
     │   ├── probe.ts              service reachability → explicit skip
-    │   ├── tenant.ts             provision / seed / drop the qa tenant
-    │   ├── personas.ts           four storageStates, built in globalSetup
-    │   ├── pq-factory.ts         create a PQ at any lifecycle status
+    │   ├── tenant.ts             discover active tenants (read-only)
+    │   ├── personas.ts           storageStates for whichever personas exist
+    │   ├── pq-locator.ts         find an existing PQ at a given status
     │   ├── clients/              s3.ts · opensearch.ts · postgres.ts
     │   └── gap-reporter.ts       three-state reporter (§10)
     │
@@ -98,11 +101,19 @@ pqa-qa/
 
 Four units, each independently usable:
 
-**`tenant.ts`** — provisions tenant slug `qa` through `POST /internal/tenants/provision` on `pqa-service` (guarded by `x-api-key`), seeds departments, and drops schema `tenant_qa` at teardown. Commerce is never written to.
+**`tenant.ts`** — *discovers* tenants rather than creating them. Tenant slugs on the deployed environment are not known in advance, and path-segment routing means the suite cannot proceed without them. It resolves the active set by probing `/<slug>/api/tenant-config` across configured candidates and recording which answer `200`, which answer `404 TENANT_NOT_FOUND`, and which are suspended.
 
-A caveat carried from `pqa-builder/CLAUDE.md` §1.5: provisioning shapes tenant schemas via TypeORM `synchronize: true`, not the 26 tracked migrations. A `qa` schema can therefore differ from a migrated production schema. Tests that depend on migration-specific structure must run against Commerce read-only, and are annotated accordingly.
+At least two active tenants are required — the S2-QA-01 gate is a *two-tenant* assertion, and every cross-tenant attack in §7 needs a second tenant to attack from. If only one is active, families 2, 6 and 9 report *not measured* and the run says so loudly.
 
-**`personas.ts`** — `globalSetup` authenticates four personas through the mock OTP flow (`MOCK_IDP_ENABLED=true`, `PARICHAY_BASE_URL=http://localhost:3200/mock-idp`) and writes four `storageState` files:
+No provisioning, no seeding, no teardown. `POST /internal/tenants/provision` and `migrate-all` are probed for **authentication only** (§7.7) — absent key and wrong key, asserting refusal. A valid key is never used to actually provision.
+
+**`personas.ts`** — `globalSetup` authenticates through the mock OTP flow, which is reported as enabled on the deployed environment. Each persona that authenticates yields a `storageState` file reused across all three Playwright projects.
+
+Only one identity is confirmed to exist: `PLATFORM_SEED_EMAIL`, a platform seed administrator. The remaining three depend on accounts being seeded by the team. `globalSetup` attempts each, and a persona that cannot authenticate is recorded as *not available* — every test requiring it is skipped with that reason, never silently run as a different persona. Families 3 and 8 degrade to *not measured* if no lower-privileged identity exists, because a wrong-department attack needs an identity that is genuinely in the wrong department.
+
+That mock authentication is reachable at all on a deployed environment is itself an assertion the suite makes: X-02 requires mock auth modes disabled in production, so the suite records the environment's mode and flags it if this host is ever promoted.
+
+The four personas the matrix is designed around:
 
 | Persona | OrgType | MembershipRole |
 |---|---|---|
@@ -113,15 +124,21 @@ A caveat carried from `pqa-builder/CLAUDE.md` §1.5: provisioning shapes tenant 
 
 Built once per run and reused across all three Playwright projects. RBAC permission keys (`users:read`, `users:manage`, `roles:read`, `roles:manage`, `permissions:read`, `ingestion:manage`) are asserted against `libs/rbac-contract`'s vocabulary, read from the running services rather than copied — a copied vocabulary is the duplication `tenant-contract` already taught this platform to avoid.
 
-**`pq-factory.ts`** — creates a PQ at a named status from the 19-value lifecycle, so a review test does not have to drive intake and drafting first. Every record it creates is prefixed with the run id and removed at teardown.
+**`pq-locator.ts`** — *finds* an existing PQ at a named status from the 19-value lifecycle, so an authorisation test has a real record to attack without creating one. Read-only by construction: it queries list endpoints, filters by status, and returns an id.
+
+A located record is a weaker fixture than a created one — the environment may hold no PQ in a given status, in which case the dependent test skips with that reason rather than passing vacuously. This is the direct cost of the non-destructive constraint, and it is why §9.2 matters: a created fixture is deterministic, a located one is whatever the environment happens to contain that day.
 
 **`clients/`** — thin S3, OpenSearch and Postgres clients constructed with a *tenant-scoped* credential, used by families 4, 5 and 8. These deliberately bypass the application: the question they answer is whether the infrastructure boundary holds when the application is not in the way.
 
 ### 5.3 Capability probe
 
-`probe.ts` runs before the suite and checks reachability of: frontend `:3000`, admin `:4200`, pqa-service `:3001`, config-manager `:3100`, identity-service `:3200`, ingestion `:8001`, rag `:8002`, Postgres, S3, OpenSearch.
+`probe.ts` runs before the suite and establishes what is actually testable: base URL reachability, which tenant slugs resolve, whether mock authentication is available, which personas authenticate, and whether S3, OpenSearch and Postgres credentials are configured.
 
-An unreachable dependency marks its tests `skip` with the reason printed in the report and recorded in `gaps.md` under *not measured*. This is the same discipline `pqa-eval`'s design applies to missing captures: a test that did not run is never reported as a test that passed. It matters immediately — the two Python services have no virtualenv on the current host, so without this probe roughly a quarter of the suite would silently report green.
+Anything unavailable marks its tests `skip` with the reason printed in the report and recorded in `gaps.md` under *not measured*. This is the same discipline `pqa-eval`'s design applies to missing captures: a test that did not run is never reported as a test that passed.
+
+On this target the probe is load-bearing rather than defensive. Three of S1-QA-01's five named attack families have no credentials (§7.4, §7.5, §7.8) and three of four personas are unconfirmed. Without the probe, a substantial fraction of the suite would report green on Friday while having tested nothing — which is precisely the outcome the exit criterion *"every gap is a named failing test, not an opinion"* exists to prevent.
+
+The probe also enforces the deployment window: if the base URL is unreachable, the run aborts with that as its single result rather than emitting hundreds of misleading failures.
 
 ## 6. The route inventory
 
@@ -169,13 +186,15 @@ Separately, and this is S1-BE-01's exit criterion stated as a test: client-suppl
 
 ### 7.4 S3 prefix escape
 
-Using a tenant-scoped credential directly against S3: read, write, list and delete outside `<tenant>/`. Expected to fail until S1-DO-02 lands per-tenant IAM boundaries. Annotated as a tracked gap owned by Bhupendra.
+**Status: not measured.** Using a tenant-scoped credential directly against S3 — read, list, and attempted write outside `<tenant>/` — requires an S3 credential for the deployed environment, which QA does not hold.
+
+The probes are written and skipped with reason `no S3 credential`, owner **Bhupendra**. They light up the moment a read-scoped key is provided. Recorded in `gaps.md` as *not measured*, not as passing: S1-DO-02's exit criterion is that prefix escape *fails closed at the infrastructure layer*, and nothing here currently verifies that.
 
 ### 7.5 Wrong index
 
-Using a tenant-scoped credential directly against OpenSearch: query, write to and enumerate another tenant's index. Same ownership and timeline.
+**Status: not measured.** Querying and enumerating another tenant's index directly against OpenSearch. Same constraint, same owner, same handling as §7.4.
 
-Note the Phase 0 boundary recorded in `CLAUDE.md` §1.1: S3 and OpenSearch are **still single-tenant**, so these two families are expected to fail comprehensively. That is the point — they quantify the remaining work.
+Worth stating plainly for the gate review: `CLAUDE.md` §1.1 records that S3 and OpenSearch are **still single-tenant** in Phase 0 — the non-Commerce tenants point at a bucket and index that do not exist. These two families are therefore expected to fail comprehensively once credentials arrive. Leaving them unmeasured does not make the boundary safe; it makes it unverified.
 
 ### 7.6 Cross-tenant session replay
 
@@ -193,7 +212,9 @@ These endpoints create schemas and seed administrators. They are the highest-pri
 
 `identity_users`, `identity_roles`, `identity_sessions`, `identity_role_permissions` and `identity_user_roles` are RLS-enabled and default closed. A query issued outside `withTenantScope()` returns **zero rows rather than erroring**.
 
-Probes: confirm the boundary holds; confirm the main connection role does not hold `BYPASSRLS`; confirm `identity_backchannel_role` is the only path to the one legitimate cross-tenant action. Critically, confirm that zero-rows is never surfaced to a user as "no data" — a silent empty result is the failure mode this design distrusts most, and here the database produces it by default.
+**Status: partly not measured.** The direct-database probes — that the main connection role does not hold `BYPASSRLS`, that `identity_backchannel_role` is the only path to the one legitimate cross-tenant action, that a query outside `withTenantScope()` returns nothing — need a Postgres DSN that QA does not hold. Skipped with reason `no database credential`, owner **Bhupendra**.
+
+What *is* measurable over HTTP: that a user-management or role-listing response never presents an empty result as authoritative "no data" when the caller is outside the tenant scope. A silent empty result is the failure mode this design distrusts most, and here the database produces it by default — so the HTTP-layer half runs regardless of credentials.
 
 ### 7.9 Egress and residency
 
@@ -229,15 +250,29 @@ Per demo-path route, per applicable persona:
 
 ## 9. Browser journeys
 
-The two-tenant end-to-end PQ workflow S2-QA-01 gates on, across the six demo-path screens: login → dashboard → PQ intake → drafting → review → export.
-
-Run twice: against `qa` with the full destructive lifecycle, and against Commerce with read-only assertions (branding, terminology, reachability, no cross-tenant bleed).
-
-These journeys are written from **observation of the running application through Playwright MCP**, not inferred from route source. Selector strategy, loading states, and the real sequence of screens are all things the source under-specifies and a recorded session settles. This is the only part of the suite that cannot begin before the stack is running.
+Journeys are written from **observation of the running application through Playwright MCP**, not inferred from route source. Selector strategy, loading states and the real sequence of screens are things the source under-specifies and a recorded session settles. This is the only part of the suite that cannot begin before the environment is reachable.
 
 Chromium and Firefox. Traces on first retry.
 
-For S4-QA-01, the same journeys run against the production topology, plus a timed config-only onboarding of a third tenant — the onboarding clock is itself the exit criterion.
+### 9.1 What runs: read-only traversal
+
+Login → dashboard → PQ list → an existing PQ's drafting screen → review screen → export, across every active tenant. Assertions cover branding and terminology per tenant, RBAC-gated navigation per persona, loading and error states, and the absence of cross-tenant bleed in anything rendered. Export is included only where it does not mutate state.
+
+### 9.2 What does not run, and why it matters
+
+**S2-QA-01's exit criterion names a "two-tenant end-to-end PQ workflow".** A PQ workflow means creating a question and moving it through the lifecycle — Assign, Accept, Draft, Submit for Approval, Approve, Transmit. Every one of those writes. Under the non-destructive constraint in §3, none can be automated.
+
+This is a scope conflict between a constraint and a P0 gate, not an oversight. It is recorded here so it is decided rather than discovered on 30 September. Three ways out, in order of preference:
+
+1. **A disposable QA tenant** on this environment, or a second environment, where writes are permitted. Restores full automated coverage and is the only option that satisfies the criterion as written.
+2. **A time-boxed write window** — an agreed slot in which the suite may drive one PQ through the lifecycle in a named tenant, with the records left in place for inspection rather than deleted.
+3. **Manual demonstration** of the lifecycle at the gate, with the automated suite covering traversal, authorisation and isolation only. The criterion is then met by a human, and the suite does not regress-test the workflow.
+
+Until one is chosen, the lifecycle half is a *blocked* row in `gaps.md`, owner Akhilesh, with S2-QA-01 named as what it blocks.
+
+### 9.3 S4-QA-01
+
+The same journeys against the production topology, plus a timed config-only onboarding of a third tenant. The onboarding clock is itself the exit criterion, and that measurement necessarily writes — it requires the same decision as §9.2.
 
 ## 10. Failure semantics and the gap register
 
@@ -271,24 +306,28 @@ The closed-gap state is what keeps the register honest. Without it a fixed gap s
 S1-QA-01's owner is Akhilesh, supported by Bhupendra and Ankur. Combined with *"suite runs daily"*, the suite must be runnable by someone who did not build it.
 
 - `yarn qa` runs everything; `yarn qa:isolation` runs Friday's deliverable alone.
-- Every URL comes from the environment. No hardcoded ports — **port 3000 is currently occupied by an unrelated Langfuse container on the development host**, and a hardcoded base URL would fail confusingly.
-- `README.md` states prerequisites plainly: Postgres up, port 3000 free, Python virtualenvs built for the two FastAPI services, `MOCK_IDP_ENABLED=true`.
+- **Every URL and identity comes from the environment.** `PQA_BASE_URL` defaults to nothing, not to a hardcoded host — the suite must never be one edited constant away from probing the wrong deployment.
+- **No credential or identity is committed.** `PLATFORM_SEED_EMAIL` is a real account on a `.gov.in` domain; it lives in a gitignored `.env`. `.env.example` lists variable names only, consistent with this repository's existing `.gitignore` policy.
+- `README.md` states prerequisites plainly: the base URL, the seeded persona accounts and which are confirmed to exist, mock-authentication availability, and which optional credentials unlock families 4, 5 and 8.
 - HTML and JUnit reporters. Non-zero exit on regression only.
-- No credential is committed. `.env.example` lists variable names only, consistent with this repository's existing `.gitignore` policy.
+- **The suite identifies itself.** Every request carries a `User-Agent` naming the suite and the run id, so its traffic is separable from real usage in the deployed environment's logs. Adversarial probes against shared infrastructure that cannot be told apart from an actual attack are an operational hazard, not a test.
 
 ## 12. Delivery schedule
 
-| When | Deliverable | Tracker |
-|---|---|---|
-| Mon 21 – Tue 22 Sep | Route inventory and data classification; fixture layer; families 1, 2, 6 | S1-QA-01 |
-| Wed 23 Sep | Families 3, 7, 8; infrastructure probes for 4, 5 | S1-QA-01, unblocks S1-DO-02 |
-| Thu 24 Sep | Family 9; gap reporter; `gaps.md`; README; daily CI job | S1-QA-01 |
-| **Fri 25 Sep** | **Hand over: suite runs daily, gaps named** | **S1-QA-01 exit** |
-| Sat 26 – Tue 29 Sep | API contract suite; browser journeys from Playwright MCP observation | S2-QA-01 |
-| **Wed 30 Sep** | **Demo acceptance gate** | **S2-QA-01** |
-| Oct | Production-topology re-run; timed third-tenant onboarding | S4-QA-01 |
+The target environment was under deployment on Mon 21 Sep. Work is ordered so that everything not requiring a reachable URL happens first, and nothing on the critical path waits on the deployment finishing.
 
-Families 4, 5 and 9 are expected to fail throughout. They are scheduled to *exist*, not to pass.
+| When | Deliverable | Needs the URL? | Tracker |
+|---|---|---|---|
+| Mon 21 Sep | Route inventory and data classification, from source; fixture scaffolding; gap reporter | No | S1-QA-01 |
+| Tue 22 Sep | Tenant and persona discovery against the live environment; families 1, 2, 6 | Yes | S1-QA-01 |
+| Wed 23 Sep | Families 3, 7; the HTTP-measurable half of 8; family 9 probes | Yes | S1-QA-01, informs S1-DO-02 |
+| Thu 24 Sep | Skip-with-reason wiring for 4, 5 and the database half of 8; `gaps.md`; README; daily CI job | Partly | S1-QA-01 |
+| **Fri 25 Sep** | **Hand over: suite runs daily, gaps named, not-measured rows owned** | — | **S1-QA-01 exit** |
+| Sat 26 – Tue 29 Sep | API contract suite; read-only browser traversal from Playwright MCP observation | Yes | S2-QA-01 |
+| **Wed 30 Sep** | **Demo acceptance gate** | — | **S2-QA-01** |
+| Oct | Production-topology re-run; timed third-tenant onboarding (needs the §9.2 decision) | Yes | S4-QA-01 |
+
+Families 4, 5 and 8 are scheduled to *exist as skipped probes with named owners*, not to pass. Family 9 is expected to fail. The §9.2 lifecycle decision is needed before Fri 25 Sep if S2-QA-01 is to be met by automation rather than by demonstration.
 
 ## 13. Out of scope
 
@@ -303,9 +342,20 @@ Families 4, 5 and 9 are expected to fail throughout. They are scheduled to *exis
 
 | Risk | Mitigation |
 |---|---|
-| The `qa` tenant's schema is shaped by `synchronize: true`, not the 26 tracked migrations, so it can diverge from production | Migration-sensitive assertions run read-only against Commerce; the divergence is recorded in `gaps.md` as a known limitation, and S4-QA-01 re-runs on production topology |
-| A crashed run leaves `tenant_qa` behind | Teardown is idempotent and also runs at the start of the next run; the schema name is fixed, never generated |
-| Families 4, 5 and 9 fail comprehensively, and a permanently red suite stops being read | The three-state reporter (§10); tracked gaps do not fail the run; the register names an owner per row |
-| `rag-service` and `ingestion-service` have no virtualenv, so a quarter of the suite cannot run | Capability probe reports explicit skips; never a silent pass. Building the virtualenvs is a prerequisite in the README |
+| Three of S1-QA-01's five named attack families are unmeasurable without infrastructure credentials, so Friday's deliverable is thinner than the criterion reads | Reported as *not measured* with Bhupendra named per row, never as passing. Escalate on Mon 22 Sep — a read-scoped S3 key, OpenSearch credential and Postgres DSN turn three skipped families into real results within a day |
+| S2-QA-01's two-tenant lifecycle cannot be automated under the non-destructive constraint | §9.2 states the conflict and three ways out. A decision is needed before Fri 25 Sep; until then it is a blocked row in `gaps.md` owned by Akhilesh |
+| Only one identity is confirmed, so the persona matrix collapses and families 3 and 8 lose their attacker | Personas are discovered, not assumed; an unavailable persona skips its tests with reason. Seeding three more accounts is a one-line ask, listed as a prerequisite in the README |
+| Adversarial probes against shared infrastructure are mistaken for a real attack, or disturb the team's work | Non-destructive by construction; every request carries an identifying `User-Agent` and run id (§11); the suite aborts cleanly if the base URL is unreachable rather than retrying against a deploying environment |
+| Families 4, 5 and 9 fail or stay unmeasured, and a permanently red suite stops being read | The three-state reporter (§10); tracked gaps do not fail the run; the register names an owner per row |
+| The deployed environment changes underneath the suite mid-sprint, and a failure is read as a regression when it was a deployment | Every run records the environment's reported build and tenant set in the report header, so a step change is visible rather than inferred |
 | The gap register becomes public before remediation | Repository made private 2026-09-21 with zero forks; `inventory/` must be excised before any future re-publication |
 | Playwright MCP observation is unavailable, so journeys get written from route source and miss real behaviour | Journeys are explicitly deferred to the S2 window rather than guessed at during S1 |
+
+---
+
+## 15. Revision history
+
+| Date | Change |
+|---|---|
+| 2026-09-21 | Initial design. Target was a locally-run stack: dedicated disposable `qa` tenant provisioned and dropped per run, Commerce read-only, full destructive PQ lifecycle automated. |
+| 2026-09-21 | **Retargeted to the shared deployed environment `https://pqa.myscheme.in/`.** Testing is now non-destructive throughout (§3, §4); `tenant.ts` discovers tenants instead of provisioning them (§5.2); personas are discovered and may be unavailable (§5.2); families 4, 5 and the database half of 8 become *not measured* pending credentials from DevOps (§7.4, §7.5, §7.8); the automated PQ lifecycle is blocked and S2-QA-01's exit criterion is at risk (§9.2); schedule reordered so URL-independent work precedes the deployment completing (§12). |

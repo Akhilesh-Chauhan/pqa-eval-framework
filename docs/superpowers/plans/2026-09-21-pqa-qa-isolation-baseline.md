@@ -10,6 +10,13 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-21-pqa-qa-design.md`
 
+**Execution status (2026-09-21):** Tasks 1–7 are implemented and committed on
+`feat/qa-isolation-suite` (`ae805c5`…`87e3df1`). 37 support-layer unit tests
+pass offline. Tasks 8–13 need the deployed environment. Two ordering defects
+found during execution are corrected below: Task 1 no longer registers a
+reporter that Task 7 creates, and Task 4 uses a setup *project* rather than
+Playwright's `globalSetup`.
+
 ## Global Constraints
 
 - **`pqa-builder` is read-only.** Not one character changes there. No file is created, edited or deleted in that tree by any task in this plan.
@@ -165,25 +172,38 @@ export default defineConfig({
     ['list'],
     ['html', { outputFolder: 'playwright-report', open: 'never' }],
     ['junit', { outputFile: 'playwright-report/junit.xml' }],
-    ['./src/support/gap-reporter.ts'],
+    // ['./src/support/gap-reporter.ts'],  <- uncommented in Task 7
   ],
   projects: [
+    // Support-layer unit tests. No network, no environment, no credentials.
     {
       name: 'unit',
-      testMatch: /.*\.spec\.ts$/,
       testDir: './src/support',
+      testMatch: /.*\.spec\.ts$/,
+    },
+    // Probes the deployed target and authenticates personas. Added in Task 4.
+    {
+      name: 'setup',
+      testDir: './src/setup',
+      testMatch: /.*\.setup\.ts$/,
     },
     {
       name: 'isolation',
-      testMatch: /.*\.spec\.ts$/,
       testDir: './src/isolation',
-      dependencies: ['unit'],
+      testMatch: /.*\.spec\.ts$/,
+      dependencies: ['unit', 'setup'],
     },
   ],
 });
 ```
 
-`isolation` depends on `unit` so that a broken support module fails fast, before any traffic reaches the deployed environment.
+Two things here are load-bearing, both found by running it rather than by reading it.
+
+**The gap reporter stays commented out until Task 7 creates it.** Playwright resolves every reporter when it loads the config, so referencing a file that does not exist yet makes `npm run qa` fail with `MODULE_NOT_FOUND` before a single test runs — for all of Tasks 1 through 6.
+
+**Setup is a project, not `globalSetup`.** Playwright's `globalSetup` option runs once for the *entire run* regardless of which project was selected, so `npm run qa:unit` would demand `PQA_BASE_URL`, a reachable environment and a full credential set just to run pure unit tests. As a setup project only `isolation` depends on it, and the support layer stays testable offline.
+
+`isolation` also depends on `unit` so that a broken support module fails fast, before any traffic reaches the deployed environment.
 
 - [ ] **Step 4: Write the failing test for `loadEnv`**
 
@@ -1257,15 +1277,19 @@ export async function probeCapabilities(
 Run: `cd pqa-qa && npm run qa:unit -- probe.spec.ts`
 Expected: PASS, 5 tests.
 
-- [ ] **Step 5: Implement `global-setup.ts`**
+- [ ] **Step 5: Implement the setup project**
+
+`pqa-qa/src/setup/capabilities.setup.ts`. Note the `authenticatePersonas` call is added in Task 5, which creates that module — until then the line stays out and the file still runs.
 
 ```ts
-import { request } from '@playwright/test';
-import { loadEnv } from './support/env.js';
-import { probeCapabilities, writeCapabilities } from './support/probe.js';
-import { authenticatePersonas } from './support/personas.js';
+import { test as setup, request } from '@playwright/test';
+import { loadEnv } from '../support/env.js';
+import { probeCapabilities, writeCapabilities } from '../support/probe.js';
+// import { authenticatePersonas } from '../support/personas.js';  <- Task 5
 
-export default async function globalSetup(): Promise<void> {
+setup('probe capabilities and authenticate personas', async () => {
+  setup.setTimeout(180_000);
+
   const env = loadEnv();
   const ctx = await request.newContext({ ignoreHTTPSErrors: false });
 
@@ -1281,7 +1305,7 @@ export default async function globalSetup(): Promise<void> {
       );
     }
 
-    capabilities.personas = await authenticatePersonas(env, capabilities);
+    // capabilities.personas = await authenticatePersonas(env, capabilities);  <- Task 5
     writeCapabilities(capabilities);
 
     const active = capabilities.tenants.filter((t) => t.status === 'active').length;
@@ -1294,18 +1318,14 @@ export default async function globalSetup(): Promise<void> {
   } finally {
     await ctx.dispose();
   }
-}
+});
 ```
 
 Aborting on an unreachable base URL is deliberate. During the deployment window the alternative is a report full of connection errors that look like isolation failures, which is worse than no report.
 
-- [ ] **Step 6: Register global setup**
+- [ ] **Step 6: Confirm the setup project is registered**
 
-In `pqa-qa/playwright.config.ts`, add inside `defineConfig({ ... })`, immediately after `testDir`:
-
-```ts
-  globalSetup: './src/global-setup.ts',
-```
+The `setup` project and `dependencies: ['unit', 'setup']` were added to `playwright.config.ts` in Task 1. Verify both are present; no edit is needed here.
 
 - [ ] **Step 7: Verify the abort path with an unreachable host**
 
@@ -2038,34 +2058,49 @@ class GapReporter implements Reporter {
 export default GapReporter;
 ```
 
-- [ ] **Step 4: Run the tests and watch them pass**
+- [ ] **Step 4: Enable the reporter**
+
+In `pqa-qa/playwright.config.ts`, uncomment the line Task 1 left commented:
+
+```ts
+    ['./src/support/gap-reporter.ts'],
+```
+
+- [ ] **Step 5: Run the tests and watch them pass**
 
 Run: `cd pqa-qa && npm run qa:unit -- gap-reporter.spec.ts`
-Expected: PASS, 9 tests.
+Expected: PASS, 9 tests, followed by the reporter's own summary line.
 
-- [ ] **Step 5: Prove the exit-code behaviour end to end**
+- [ ] **Step 6: Prove the exit-code behaviour end to end**
 
-Create a throwaway spec `pqa-qa/src/isolation/zz-reporter-smoke.spec.ts`:
+Put the throwaway spec in `pqa-qa/src/support/zz-reporter-smoke.spec.ts`, **not** under `src/isolation/` — the isolation project depends on `setup`, which needs a reachable environment. The `unit` project runs offline:
 
 ```ts
 import { test } from '@playwright/test';
-import { trackedGap } from '../support/annotations.js';
+import { trackedGap } from './annotations.js';
 
-test('a tracked gap fails without failing the run', async ({}, testInfo) => {
-  trackedGap(testInfo, { tracker: 'S1-DO-02', owner: 'Bhupendra', detail: 'smoke' });
-  throw new Error('expected refusal but got 200');
+test.describe('smoke', () => {
+  test('a tracked gap fails without failing the run', async ({}, testInfo) => {
+    trackedGap(testInfo, { tracker: 'S1-DO-02', owner: 'Bhupendra', detail: 'smoke' });
+    throw new Error('expected refusal but got 200');
+  });
 });
 ```
 
-Run: `cd pqa-qa && npm run qa:isolation -- zz-reporter-smoke.spec.ts; echo "exit=$?"`
+Run: `cd pqa-qa && npm run qa:unit -- zz-reporter-smoke; echo "exit=$?"`
 Expected: the test reports as failed in the list output, `inventory/gaps.md` gains a "Tracked gaps" row naming Bhupendra, and **`exit=0`**.
 
-Then change `trackedGap(...)` to a plain `throw` with no annotation and re-run.
-Expected: `exit=1`, and the row moves to "Regressions".
+Then remove the `trackedGap(...)` call so the test throws unannotated, and re-run.
+Expected: **`exit=1`**, and the row moves to "Regressions".
 
-Delete `zz-reporter-smoke.spec.ts` once both behaviours are confirmed.
+Delete `zz-reporter-smoke.spec.ts` once both behaviours are confirmed, then run
+`rm -rf src/.auth && npm run qa:unit` so the committed register does not carry a
+stale target in its header.
 
-- [ ] **Step 6: Commit**
+Both directions must be observed. A reporter that never demoted a failure, or
+never promoted one, has not been shown to do either.
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git add pqa-qa/src/support/gap-reporter.ts pqa-qa/src/support/gap-reporter.spec.ts pqa-qa/inventory/gaps.md

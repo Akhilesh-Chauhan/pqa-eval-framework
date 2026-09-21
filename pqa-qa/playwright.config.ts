@@ -2,6 +2,7 @@ import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
   testDir: './src',
+  globalSetup: './src/global-setup.ts',
   forbidOnly: !!process.env.CI,
   retries: 0,
   workers: 4,

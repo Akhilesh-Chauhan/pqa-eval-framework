@@ -2,7 +2,6 @@ import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
   testDir: './src',
-  globalSetup: './src/global-setup.ts',
   forbidOnly: !!process.env.CI,
   retries: 0,
   workers: 4,
@@ -13,16 +12,24 @@ export default defineConfig({
     // ['./src/support/gap-reporter.ts'],  <- enabled in Task 7
   ],
   projects: [
+    // Support-layer unit tests. No network, no environment, no credentials.
     {
       name: 'unit',
-      testMatch: /.*\.spec\.ts$/,
       testDir: './src/support',
+      testMatch: /.*\.spec\.ts$/,
+    },
+    // Probes the deployed target and authenticates personas. Only the
+    // isolation project depends on it, so `npm run qa:unit` stays offline.
+    {
+      name: 'setup',
+      testDir: './src/setup',
+      testMatch: /.*\.setup\.ts$/,
     },
     {
       name: 'isolation',
-      testMatch: /.*\.spec\.ts$/,
       testDir: './src/isolation',
-      dependencies: ['unit'],
+      testMatch: /.*\.spec\.ts$/,
+      dependencies: ['unit', 'setup'],
     },
   ],
 });

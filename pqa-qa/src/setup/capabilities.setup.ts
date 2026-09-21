@@ -1,8 +1,17 @@
-import { request } from '@playwright/test';
-import { loadEnv } from './support/env.js';
-import { probeCapabilities, writeCapabilities } from './support/probe.js';
+import { test as setup, request } from '@playwright/test';
+import { loadEnv } from '../support/env.js';
+import { probeCapabilities, writeCapabilities } from '../support/probe.js';
+import { authenticatePersonas } from '../support/personas.js';
 
-export default async function globalSetup(): Promise<void> {
+/**
+ * Runs once before the isolation project. Deliberately a setup *project*
+ * rather than Playwright's `globalSetup`: globalSetup runs for every project,
+ * which would make the support-layer unit tests require a reachable
+ * environment and a full set of credentials to run at all.
+ */
+setup('probe capabilities and authenticate personas', async () => {
+  setup.setTimeout(180_000);
+
   const env = loadEnv();
   const ctx = await request.newContext({ ignoreHTTPSErrors: false });
 
@@ -18,7 +27,7 @@ export default async function globalSetup(): Promise<void> {
       );
     }
 
-    // Persona authentication is wired in by Task 5.
+    capabilities.personas = await authenticatePersonas(env, capabilities);
     writeCapabilities(capabilities);
 
     const active = capabilities.tenants.filter((t) => t.status === 'active').length;
@@ -31,4 +40,4 @@ export default async function globalSetup(): Promise<void> {
   } finally {
     await ctx.dispose();
   }
-}
+});

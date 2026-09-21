@@ -305,7 +305,7 @@ The closed-gap state is what keeps the register honest. Without it a fixed gap s
 
 S1-QA-01's owner is Akhilesh, supported by Bhupendra and Ankur. Combined with *"suite runs daily"*, the suite must be runnable by someone who did not build it.
 
-- `yarn qa` runs everything; `yarn qa:isolation` runs Friday's deliverable alone.
+- `npm run qa` runs everything; `npm run qa:isolation` runs Friday's deliverable alone. npm, not yarn — yarn is not installed on the team's hosts.
 - **Every URL and identity comes from the environment.** `PQA_BASE_URL` defaults to nothing, not to a hardcoded host — the suite must never be one edited constant away from probing the wrong deployment.
 - **No credential or identity is committed.** `PLATFORM_SEED_EMAIL` is a real account on a `.gov.in` domain; it lives in a gitignored `.env`. `.env.example` lists variable names only, consistent with this repository's existing `.gitignore` policy.
 - `README.md` states prerequisites plainly: the base URL, the seeded persona accounts and which are confirmed to exist, mock-authentication availability, and which optional credentials unlock families 4, 5 and 8.

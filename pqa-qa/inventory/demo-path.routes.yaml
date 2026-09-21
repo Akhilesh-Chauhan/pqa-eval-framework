@@ -1,0 +1,277 @@
+# S1-QA-01 deliverable (a): demo-path route inventory and data classification.
+#
+# Scope: routes reachable from the six demo-journey screens named in S1-UX-01 —
+# login, dashboard, PQ intake, drafting, review, export. Routes outside that
+# journey are listed with s1_scope: false so the wider surface is visible
+# without being a commitment this sprint.
+#
+# data_class describes what the RESPONSE BODY contains, not what the path
+# suggests. It is the field that decides which attacks apply and the one
+# S1-DO-02 needs for IAM and index scoping.
+#
+#   public            identical for every caller; no tenant or user data
+#   tenant-scoped     one tenant's data; another tenant must never see it
+#   department-scoped one division's data; another division must never see it
+#   private-source    may carry private external-source content (promote-to-public)
+#   credential        contains or accepts a key, token, presigned URL or session
+#
+# gate is the ACTUAL enforcement point, traced through proxy helpers rather
+# than grepped from the route file. "none" means no session is required by the
+# BFF. "readCallerEmail" means identity is taken from the query string or
+# request body — i.e. supplied by the caller — and forwarded upstream.
+#
+# NON-DESTRUCTIVE PROBE RULE. The target is shared infrastructure. Write-method
+# routes (POST/PUT/PATCH/DELETE that mutate) carry only `missing-identity`,
+# because that probe is unauthenticated and a correctly-gated route refuses
+# before anything is written. They deliberately do NOT carry wrong-tenant or
+# wrong-department, since those require an authenticated call and an
+# authenticated write is out of scope. See spec §3 and §9.2.
+
+# ---------------------------------------------------------------- login
+
+- path: /{tenant}/api/tenant-config
+  method: GET
+  screen: login
+  upstream: tenant-config-manager-service (resolve by slug)
+  gate: none
+  data_class: public
+  attacks: [wrong-tenant]
+  s1_scope: true
+
+- path: /{tenant}/api/auth/session
+  method: GET
+  screen: login
+  upstream: identity-service /auth/session
+  gate: resolveCurrentUserForTenant
+  data_class: credential
+  attacks: [missing-identity, wrong-tenant, session-replay]
+  s1_scope: true
+
+- path: /{tenant}/api/auth/otp/request
+  method: POST
+  screen: login
+  upstream: identity-service /auth/mock/otp/request
+  gate: isDevFallbackAvailable
+  data_class: credential
+  attacks: [wrong-tenant]
+  s1_scope: true
+
+- path: /{tenant}/api/auth/otp/verify
+  method: POST
+  screen: login
+  upstream: identity-service /auth/mock/otp/verify
+  gate: isDevFallbackAvailable
+  data_class: credential
+  attacks: [wrong-tenant]
+  s1_scope: true
+
+# ------------------------------------------------------------ dashboard
+
+- path: /{tenant}/api/dashboard/counts
+  method: GET
+  screen: dashboard
+  upstream: pqa-service /dashboard/counts
+  gate: requirePortalSession
+  data_class: tenant-scoped
+  attacks: [missing-identity, wrong-tenant, session-replay]
+  s1_scope: true
+
+- path: /{tenant}/api/dashboard/action-required
+  method: GET
+  screen: dashboard
+  upstream: pqa-service /dashboard/action-required
+  gate: requirePortalSession
+  data_class: department-scoped
+  attacks: [missing-identity, wrong-tenant, wrong-department, session-replay]
+  s1_scope: true
+
+- path: /{tenant}/api/in-app-notifications
+  method: GET
+  screen: dashboard
+  upstream: pqa-service /in-app-notifications
+  gate: requirePortalSession
+  data_class: department-scoped
+  attacks: [missing-identity, wrong-tenant, wrong-department, session-replay]
+  s1_scope: true
+
+- path: /{tenant}/api/departments
+  method: GET
+  screen: dashboard
+  upstream: pqa-service /departments
+  gate: requirePortalSession
+  data_class: tenant-scoped
+  attacks: [missing-identity, wrong-tenant, session-replay]
+  s1_scope: true
+
+# --------------------------------------------------------------- intake
+
+- path: /{tenant}/api/parliament/questions
+  method: GET
+  screen: intake
+  upstream: pqa-service /questions
+  gate: requirePortalSession
+  data_class: tenant-scoped
+  attacks: [missing-identity, wrong-tenant, session-replay]
+  s1_scope: true
+
+# No session gate. Identity comes from readCallerEmail, which reads
+# `callerEmail` from the query string or JSON body and forwards it upstream via
+# appendCallerEmailToPath. S1-BE-01's exit criterion is that no client-supplied
+# identity is accepted anywhere on the demo path; this route is where that is
+# decided. Probed unauthenticated with an invalid body only.
+- path: /{tenant}/api/questions
+  method: POST
+  screen: intake
+  upstream: pqa-service /questions
+  gate: readCallerEmail
+  data_class: tenant-scoped
+  attacks: [missing-identity]
+  s1_scope: true
+
+# No session gate; mints a presigned S3 URL. credential-class by definition.
+- path: /{tenant}/api/files/presigned-url
+  method: POST
+  screen: intake
+  upstream: pqa-service /files/presigned-url
+  gate: none
+  data_class: credential
+  attacks: [missing-identity, wrong-tenant, s3-prefix-escape]
+  s1_scope: true
+
+# ------------------------------------------------------------- drafting
+
+- path: /{tenant}/api/parliament/questions/{id}
+  method: GET
+  screen: drafting
+  upstream: pqa-service /questions/:id
+  gate: requirePortalSession
+  data_class: department-scoped
+  attacks: [missing-identity, wrong-tenant, wrong-department, session-replay]
+  s1_scope: true
+
+- path: /{tenant}/api/departments/questions/{id}
+  method: GET
+  screen: drafting
+  upstream: pqa-service /departments/questions/:id
+  gate: requirePortalSession
+  data_class: department-scoped
+  attacks: [missing-identity, wrong-tenant, wrong-department, session-replay]
+  s1_scope: true
+
+# Write route: unauthenticated probe only, per the rule at the top of this file.
+- path: /{tenant}/api/departments/questions/{id}/draft
+  method: PATCH
+  screen: drafting
+  upstream: pqa-service /departments/questions/:id/draft
+  gate: requirePortalSession
+  data_class: department-scoped
+  attacks: [missing-identity]
+  s1_scope: true
+
+- path: /{tenant}/api/assistant/search
+  method: POST
+  screen: drafting
+  upstream: rag-service /search
+  gate: sessionAndBase
+  data_class: private-source
+  attacks: [missing-identity, wrong-tenant, wrong-index, egress-residency]
+  s1_scope: true
+
+- path: /{tenant}/api/assistant/generate
+  method: POST
+  screen: drafting
+  upstream: rag-service /generate
+  gate: sessionAndBase
+  data_class: private-source
+  attacks: [missing-identity, wrong-tenant, wrong-index, egress-residency]
+  s1_scope: true
+
+# --------------------------------------------------------------- review
+
+- path: /{tenant}/api/profile/me
+  method: GET
+  screen: review
+  upstream: pqa-service /profile/me
+  gate: requirePortalSession
+  data_class: department-scoped
+  attacks: [missing-identity, wrong-tenant, wrong-department, session-replay]
+  s1_scope: true
+
+# Write-ish: generates an official answer PDF. Unauthenticated probe only.
+- path: /{tenant}/api/parliament/questions/{id}/official-answer-pdf
+  method: POST
+  screen: review
+  upstream: pqa-service /questions/:id/official-answer-pdf
+  gate: requirePortalSession
+  data_class: department-scoped
+  attacks: [missing-identity]
+  s1_scope: true
+
+# --------------------------------------------------------------- export
+
+# No session gate; identity via readCallerEmail. Returns a department's
+# consolidated answers as a document.
+- path: /{tenant}/api/questions/upload-batch/{id}/export-docx
+  method: GET
+  screen: export
+  upstream: pqa-service /questions/upload-batch/:id/export-docx
+  gate: readCallerEmail
+  data_class: department-scoped
+  attacks: [missing-identity, wrong-tenant, wrong-department, session-replay]
+  s1_scope: true
+
+# ------------------------------------------------ out of S1 scope (listed)
+
+- path: /{tenant}/api/rbac/users
+  method: GET
+  screen: none
+  upstream: identity-service /users
+  gate: getCurrentUser
+  data_class: tenant-scoped
+  attacks: [identity-rls]
+  s1_scope: false
+
+- path: /{tenant}/api/rbac/roles
+  method: GET
+  screen: none
+  upstream: identity-service /roles
+  gate: getCurrentUser
+  data_class: tenant-scoped
+  attacks: [identity-rls]
+  s1_scope: false
+
+- path: /{tenant}/api/embed
+  method: POST
+  screen: none
+  upstream: rag-service /embed
+  gate: requireIngestionPermission
+  data_class: tenant-scoped
+  attacks: []
+  s1_scope: false
+
+- path: /{tenant}/api/ingestion/batch
+  method: POST
+  screen: none
+  upstream: ingestion-service /batch
+  gate: requireIngestionPermission
+  data_class: tenant-scoped
+  attacks: []
+  s1_scope: false
+
+- path: /{tenant}/api/collaboration/requests
+  method: GET
+  screen: none
+  upstream: pqa-service /collaboration/requests
+  gate: requirePortalSession
+  data_class: department-scoped
+  attacks: []
+  s1_scope: false
+
+- path: /{tenant}/api/transfer-requests
+  method: GET
+  screen: none
+  upstream: pqa-service /transfer-requests
+  gate: requirePortalSession
+  data_class: department-scoped
+  attacks: []
+  s1_scope: false

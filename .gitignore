@@ -32,3 +32,10 @@ pqa-eval/runs/
 # OS / editor
 .DS_Store
 *.swp
+
+# pqa-qa — Playwright suite
+pqa-qa/node_modules/
+pqa-qa/.env
+pqa-qa/playwright-report/
+pqa-qa/test-results/
+pqa-qa/src/.auth/

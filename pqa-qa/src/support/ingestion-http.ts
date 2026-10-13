@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import type { Expect } from './golden-manifest.js';
 
 /** What one uploaded file came to. "duplicate" means the tenant's documents were not cleared first. */
@@ -26,4 +27,25 @@ export function meets(expect: Expect, outcome: Outcome): boolean {
   if (expect === 'A') return outcome === 'accept';
   if (expect === 'R') return outcome === 'refuse';
   return outcome === 'refuse' || outcome === 'quarantine';
+}
+
+export interface FilePart {
+  filename: string;
+  /** Omitted = the part carries no Content-Type (case F15). */
+  mime?: string;
+  data: Buffer;
+}
+
+/** multipart/form-data with every file under "files". Built by hand because Playwright's multipart option
+ * always sends a Content-Type, and F15 needs a part without one. */
+export function multipart(files: FilePart[]): { body: Buffer; contentType: string } {
+  const boundary = `----pqaqa${randomBytes(12).toString('hex')}`;
+  // RFC 7578 §4.2: percent-encode quotes and drop line breaks so a filename cannot end its header.
+  const safe = (s: string) => s.replace(/"/g, '%22').replace(/[\r\n]/g, '');
+  const parts = files.flatMap((f) => [
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="${safe(f.filename)}"\r\n${f.mime ? `Content-Type: ${f.mime}\r\n` : ''}\r\n`),
+    f.data,
+    Buffer.from('\r\n'),
+  ]);
+  return { body: Buffer.concat([...parts, Buffer.from(`--${boundary}--\r\n`)]), contentType: `multipart/form-data; boundary=${boundary}` };
 }

@@ -13,6 +13,15 @@ export function classifyItem(item: any): { outcome: Outcome; detail: string } {
   return { outcome: 'error', detail: `unexpected item status "${s}"` };
 }
 
+/** Pairs a batch's results with the files sent. The ingestion service returns one result per file, in order, but a
+ * quarantined result has no filename — so position decides, unless a filename says otherwise. With a different
+ * count, only names can be trusted. */
+export function matchResults(names: string[], items: any[]): Array<any | undefined> {
+  const byName = (n: string) => items.find((i) => i?.filename === n);
+  if (items.length !== names.length) return names.map(byName);
+  return names.map((n, i) => (items[i]?.filename && items[i].filename !== n ? byName(n) : items[i]));
+}
+
 /** A single-file upload: a 4xx refusal before storage, or the first item's outcome. */
 export function classifyUpload(status: number, body: any): { outcome: Outcome; detail: string } {
   const message = String(body?.error?.message ?? body?.error ?? body?.detail ?? '');

@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { classifyUpload, meets, multipart } from './ingestion-http.js';
+import { classifyUpload, matchResults, meets, multipart } from './ingestion-http.js';
 
 test('classifyUpload reads status codes and the first item', () => {
   expect(classifyUpload(400, { detail: 'Unsupported file type' }).outcome).toBe('refuse');
@@ -40,4 +40,19 @@ test('multipart round-trips through a real form-data parser, with and without a 
   expect(b!.type).not.toBe('application/pdf');
   expect([...Buffer.from(await b!.arrayBuffer())]).toEqual([0, 255, 13, 10]);
   expect(body.toString('latin1')).not.toMatch(/filename="no-mime\.pdf"\r\nContent-Type/);
+});
+
+test('matchResults pairs a batch by position, because quarantined results carry no filename', () => {
+  const q = { status: 'quarantined', error: 'convert failed' };
+  expect(matchResults(['a.pdf', 'b.pdf'], [{ filename: 'a.pdf', status: 'completed' }, q])).toEqual([{ filename: 'a.pdf', status: 'completed' }, q]);
+});
+
+test('matchResults trusts a filename that disagrees with the position', () => {
+  const a = { filename: 'a.pdf' };
+  const b = { filename: 'b.pdf' };
+  expect(matchResults(['a.pdf', 'b.pdf'], [b, a])).toEqual([a, b]);
+});
+
+test('matchResults falls back to names alone when the counts differ', () => {
+  expect(matchResults(['a.pdf', 'b.pdf', 'c.pdf'], [{ filename: 'c.pdf' }, { status: 'quarantined' }])).toEqual([undefined, undefined, { filename: 'c.pdf' }]);
 });

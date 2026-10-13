@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { notMeasured } from '../support/annotations.js';
 import { loadGolden } from '../support/golden-manifest.js';
-import { classifyItem } from '../support/ingestion-http.js';
+import { classifyItem, matchResults } from '../support/ingestion-http.js';
 import type { Outcome } from '../support/ingestion-http.js';
 import { scoreField } from '../support/ingestion-scoring.js';
 import { SETUPS } from '../support/ingestion-setups.js';
@@ -48,8 +48,9 @@ test.describe('category and metadata', () => {
       let res = await upload(portal, ienv.portalUrl, ienv.tenant!, 'ingestion', files);
       if (res.status >= 500 || res.status === 0) res = await upload(portal, ienv.portalUrl, ienv.tenant!, 'ingestion', files);
       const items: any[] = Array.isArray(res.body?.results) ? res.body.results : [];
-      for (const r of batch) {
-        const item = items.find((i) => i?.filename === r.upload_name);
+      const matched = matchResults(batch.map((r) => r.upload_name), items);
+      for (const [i, r] of batch.entries()) {
+        const item = matched[i];
         const judged = res.status >= 200 && res.status < 300 && item ? classifyItem(item) : { outcome: 'error' as const, detail: `batch answered ${res.status} after one retry` };
         store.put(`cat-${r.id}`, { ...judged, classification: item?.classification ?? null, metadata: item?.pq_metadata ?? null } satisfies StoredCat);
       }

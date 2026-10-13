@@ -8,7 +8,10 @@
     "qa": "playwright test",
     "qa:unit": "playwright test --project=unit",
     "qa:isolation": "playwright test --project=isolation",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "qa:admin:login": "node --env-file=.env scripts/admin-login.mjs",
+    "qa:admin": "playwright test --project=admin-public --project=admin",
+    "qa:share": "node scripts/share-report.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0",

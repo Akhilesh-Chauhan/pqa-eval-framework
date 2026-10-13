@@ -50,7 +50,7 @@ const PERSONA_VARS: Array<[PersonaName, string]> = [
   ['division-member', 'PQA_PERSONA_DIVISION_MEMBER_EMAIL'],
 ];
 
-function required(src: NodeJS.ProcessEnv, key: string): string {
+export function required(src: NodeJS.ProcessEnv, key: string): string {
   const value = src[key]?.trim();
   if (!value) throw new MissingEnvError(key, 'is required and was not set');
   return value;

@@ -45,7 +45,7 @@ export function classifyOutcome(annotations: Annotation[], status: string): Outc
  * classifies every tracked gap as a regression and turns the run red on day
  * one. Read both, deduped.
  */
-function mergedAnnotations(test: TestCase, result: TestResult): Annotation[] {
+export function mergedAnnotations(test: TestCase, result: TestResult): Annotation[] {
   const fromResult = (result as unknown as { annotations?: Annotation[] }).annotations ?? [];
   const seen = new Set<string>();
   return [...test.annotations, ...fromResult].filter((a) => {

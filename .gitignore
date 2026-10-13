@@ -39,3 +39,6 @@ pqa-qa/.env
 pqa-qa/playwright-report/
 pqa-qa/test-results/
 pqa-qa/src/.auth/
+# Failure evidence: screenshots of a live environment and repro notes
+pqa-qa/evidence/
+pqa-qa/reports/

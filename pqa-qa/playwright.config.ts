@@ -75,5 +75,33 @@ export default defineConfig({
       workers: 1,
       use: { baseURL: process.env.PQA_ADMIN_URL, storageState: SESSION_FILE },
     },
+    // AI Assistant ingestion golden dataset (PQA Builder/qa/specs/2026-10-13-golden-ingestion-dataset-design.md).
+    // Writes only to the disposable tenant PQA_INGEST_TENANT (qi + 4 hex). Order: provision → ingestion → retire.
+    {
+      name: 'ingestion-provision',
+      testDir: './src/ingestion',
+      testMatch: /provision\.spec\.ts$/,
+      dependencies: ['admin-session'],
+      workers: 1,
+      use: { baseURL: process.env.PQA_ADMIN_URL, storageState: SESSION_FILE },
+    },
+    {
+      name: 'ingestion',
+      testDir: './src/ingestion',
+      testMatch: /\d-[a-z-]+\.spec\.ts$/,
+      dependencies: ['admin-session'],
+      workers: 1,
+      // 330 s config-cache waits; a batch may take the route's full 300 s.
+      timeout: 600_000,
+      use: { baseURL: process.env.PQA_ADMIN_URL, storageState: SESSION_FILE },
+    },
+    {
+      name: 'ingestion-retire',
+      testDir: './src/ingestion',
+      testMatch: /retire\.spec\.ts$/,
+      dependencies: ['admin-session'],
+      workers: 1,
+      use: { baseURL: process.env.PQA_ADMIN_URL, storageState: SESSION_FILE },
+    },
   ],
 });

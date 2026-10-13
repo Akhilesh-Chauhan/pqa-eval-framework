@@ -11,7 +11,10 @@
     "typecheck": "tsc --noEmit",
     "qa:admin:login": "node --env-file=.env scripts/admin-login.mjs",
     "qa:admin": "playwright test --project=admin-public --project=admin",
-    "qa:share": "node scripts/share-report.mjs"
+    "qa:share": "node scripts/share-report.mjs",
+    "qa:ingest:provision": "playwright test --project=ingestion-provision && node --env-file=.env scripts/portal-login.mjs",
+    "qa:ingest": "playwright test --project=ingestion",
+    "qa:ingest:retire": "playwright test --project=ingestion-retire"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0",

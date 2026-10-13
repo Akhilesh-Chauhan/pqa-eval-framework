@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import type { APIRequestContext, Page } from '@playwright/test';
-import { PortalSessionExpired, keepAlive, keepsSession } from '../ingestion/portal.js';
+import { PortalSessionExpired, keepAlive, keepsSession, upload } from '../ingestion/portal.js';
 import { touchAdmin } from '../ingestion/admin-config.js';
 import * as store from '../ingestion/store.js';
 
@@ -58,4 +58,15 @@ test('touchAdmin uses the admin session, so it is not idle for an hour while the
   const page = { request: { get: async (url: string) => (calls.push(url), { status: () => 200 }) } } as unknown as Page;
   await touchAdmin(page);
   expect(calls).toEqual(['/api/auth/session']);
+});
+
+test('upload turns a request that throws (timeout, network) into status 0, so the caller can retry and record it', async () => {
+  const { portal } = fake(200, 50);
+  (portal as any).post = async (url: string) => {
+    if (url.endsWith('/batch')) throw new Error('Request timed out after 330000ms');
+    return { status: () => 200 };
+  };
+  const res = await upload(portal, 'https://p', 'qi1a2b', 'ingestion', [{ filename: 'a.pdf', mime: 'application/pdf', data: Buffer.from('%PDF') }]);
+  expect(res.status).toBe(0);
+  expect(String(res.body.error)).toMatch(/timed out/);
 });

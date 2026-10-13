@@ -34,6 +34,7 @@ test.describe('category and metadata', () => {
 
   test('category: make P1 live (wait for the caches if it is not) and clear the documents', async ({ page, portal }) => {
     stopIfExpired();
+    store.put('category-started', { at: new Date().toISOString() });
     if (store.get<{ id: string }>('setup')?.id !== 'P1') await applySetup(page, ienv.tenant!, SETUPS[0]!);
     await clearDocuments(portal, ienv.portalUrl, ienv.tenant!);
     store.put('category-ready', { at: new Date().toISOString() });
@@ -43,6 +44,7 @@ test.describe('category and metadata', () => {
     test(`category: ingest batch ${k + 1} of ${batches.length} (${batch.map((r) => r.id).join(', ')})`, async ({ page, portal }, testInfo) => {
       stopIfExpired();
       test.skip(!store.get('category-ready'), 'the P1 set-up test did not finish');
+      test.setTimeout(2 * 330_000 + 120_000); // the route may take its full 300 s, twice
       await touchAdmin(page);
       const files = batch.map((r) => ({ filename: r.upload_name, mime: 'application/pdf', data: readFileSync(join(golden!.dir, r.file)) }));
       let res = await upload(portal, ienv.portalUrl, ienv.tenant!, 'ingestion', files);

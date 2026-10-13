@@ -123,7 +123,14 @@ export interface CatResult {
 
 const ratio = (n: number, d: number): number | null => (d ? Math.round((n / d) * 1000) / 1000 : null);
 
-export function summarize(gate: GateResult[], cat: CatResult[]) {
+/** Category rows a run never recorded (a batch that threw, a run cut short) stay in the summary as not measured. */
+export function withUnrecorded(cat: CatResult[], rows: Array<Pick<CatResult, 'id' | 'user_category' | 'expected_type' | 'truth_status'>>): CatResult[] {
+  const seen = new Set(cat.map((c) => c.id));
+  return [...cat, ...rows.filter((r) => !seen.has(r.id)).map((r) => ({ ...r, outcome: 'error' as const, fields: [] }))];
+}
+
+/** expectedChecks: format-gate checks the run set out to make; the difference from those recorded is reported. */
+export function summarize(gate: GateResult[], cat: CatResult[], expectedChecks = gate.length) {
   const falseAccepts = gate.filter((g) => g.expect !== 'A' && g.outcome === 'accept');
   const falseRefusals = gate.filter((g) => g.expect === 'A' && g.outcome !== 'accept');
   const accepted = cat.filter((c) => c.outcome === 'accept');
@@ -149,6 +156,8 @@ export function summarize(gate: GateResult[], cat: CatResult[]) {
   return {
     gate: {
       checks: gate.length,
+      expectedChecks,
+      notRecorded: Math.max(0, expectedChecks - gate.length),
       correct: gate.filter((g) => meets(g.expect, g.outcome)).length,
       falseAccepts: falseAccepts.length,
       falseRefusals: falseRefusals.length,

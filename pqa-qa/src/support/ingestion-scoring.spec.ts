@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { listF1, normalizeId, parseDate, scoreField, similarity, summarize } from './ingestion-scoring.js';
+import { listF1, normalizeId, parseDate, scoreField, similarity, summarize, withUnrecorded } from './ingestion-scoring.js';
 import type { CatResult, GateResult } from './ingestion-scoring.js';
 
 test('parseDate handles the formats in the trackers and documents', () => {
@@ -64,4 +64,21 @@ test('summarize counts gate errors and builds the confusion table', () => {
   expect(s.category).toMatchObject({ files: 3, accepted: 2, notMeasured: 1, accuracy: 0.5, lowConfidence: 1 });
   expect(s.category.confusion).toEqual({ orders: { orders: 1 }, acts: { others: 1 } });
   expect(s.metadata).toMatchObject({ documents: 1, documentsAllFieldsMatch: 0, fieldAccuracy: 0.5 });
+});
+
+test('withUnrecorded lists files a run never recorded as not measured, instead of dropping them', () => {
+  const rows = [
+    { id: 'GI-CAT-001', user_category: 'Acts', expected_type: 'acts' as const, truth_status: 'verified' },
+    { id: 'GI-CAT-002', user_category: 'Bill', expected_type: 'acts' as const, truth_status: 'draft' },
+  ];
+  const done = [{ ...rows[0]!, actual_type: 'acts', outcome: 'accept' as const, fields: [] }];
+  const all = withUnrecorded(done, rows);
+  expect(all.map((c) => [c.id, c.outcome])).toEqual([['GI-CAT-001', 'accept'], ['GI-CAT-002', 'error']]);
+  expect(summarize([], all).category).toMatchObject({ files: 2, accepted: 1, notMeasured: 1 });
+});
+
+test('summarize reports gate checks that were expected but never recorded', () => {
+  const gate: GateResult[] = [{ id: 'GI-FMT-01', setup: 'P1', route: 'ingestion', expect: 'A', outcome: 'accept' }];
+  expect(summarize(gate, [], 208).gate).toMatchObject({ checks: 1, expectedChecks: 208, notRecorded: 207 });
+  expect(summarize(gate, []).gate).toMatchObject({ expectedChecks: 1, notRecorded: 0 });
 });

@@ -27,6 +27,7 @@ test.describe('format gate', () => {
   SETUPS.forEach((setup, s) => {
     test(`format gate: apply ${setup.id} (${setup.types.join(', ')}; ${setup.maxMb} MB) and wait for the config caches`, async ({ page, portal }) => {
       stopIfExpired();
+      store.put('format-started', { at: new Date().toISOString() });
       await clearDocuments(portal, ienv.portalUrl, ienv.tenant!);
       await applySetup(page, ienv.tenant!, setup);
     });
@@ -55,8 +56,9 @@ test.describe('format gate', () => {
           const res = await upload(portal, ienv.portalUrl, ienv.tenant!, route, [{ filename: c.upload_name, mime: mime ?? undefined, data }]);
           const { outcome, detail } = classifyUpload(res.status, res.body);
           store.put(`gate-${setup.id}-${route}-${c.id}`, { id: c.id, setup: setup.id, route, expect: want, outcome } satisfies GateResult);
-          // The next case may send the same bytes; without a clear it would come back "duplicate".
-          if (outcome === 'accept' || outcome === 'quarantine') await clearDocuments(portal, ienv.portalUrl, ienv.tenant!);
+          // The next case may send the same bytes; unless the file was refused outright (an error or a timeout may still
+          // have indexed it), clear, or the next upload would come back "duplicate".
+          if (outcome !== 'refuse') await clearDocuments(portal, ienv.portalUrl, ienv.tenant!);
           await testInfo.attach('outcome', { body: JSON.stringify({ status: res.status, outcome, detail }, null, 2), contentType: 'application/json' });
           expect(meets(want, outcome), `expected ${WORD[want]}, got ${outcome} (${detail})`).toBe(true);
         });

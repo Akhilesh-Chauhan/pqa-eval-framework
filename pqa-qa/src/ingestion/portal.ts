@@ -40,8 +40,13 @@ export function stopIfExpired(): void {
 export async function upload(portal: APIRequestContext, base: string, slug: string, route: Route, files: FilePart[]): Promise<{ status: number; body: any }> {
   await keepAlive(portal, base, slug);
   const { body, contentType } = multipart(files);
-  const res = await portal.post(`${base}/${slug}/api/${route}/batch`, { data: body, headers: { 'content-type': contentType }, timeout: 330_000, failOnStatusCode: false });
-  return { status: res.status(), body: await res.json().catch(() => ({})) };
+  try {
+    const res = await portal.post(`${base}/${slug}/api/${route}/batch`, { data: body, headers: { 'content-type': contentType }, timeout: 330_000, failOnStatusCode: false });
+    return { status: res.status(), body: await res.json().catch(() => ({})) };
+  } catch (e) {
+    // A timeout or dropped connection: status 0, so the caller retries or records "not measured" instead of losing the case.
+    return { status: 0, body: { error: `request failed: ${(e as Error).message.split('\n')[0]}` } };
+  }
 }
 
 /** DELETE /<slug>/api/ingestion-demo/clear — empties the tenant's index, so the next upload is processed afresh. */

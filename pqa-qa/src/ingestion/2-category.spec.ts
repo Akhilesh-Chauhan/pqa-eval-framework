@@ -6,7 +6,7 @@ import { classifyItem } from '../support/ingestion-http.js';
 import type { Outcome } from '../support/ingestion-http.js';
 import { scoreField } from '../support/ingestion-scoring.js';
 import { SETUPS } from '../support/ingestion-setups.js';
-import { applySetup } from './admin-config.js';
+import { applySetup, touchAdmin } from './admin-config.js';
 import { test, expect } from './fixtures.js';
 import { loadIngestEnv } from './ingest-env.js';
 import { clearDocuments, stopIfExpired, upload } from './portal.js';
@@ -40,9 +40,10 @@ test.describe('category and metadata', () => {
   });
 
   batches.forEach((batch, k) => {
-    test(`category: ingest batch ${k + 1} of ${batches.length} (${batch.map((r) => r.id).join(', ')})`, async ({ portal }, testInfo) => {
+    test(`category: ingest batch ${k + 1} of ${batches.length} (${batch.map((r) => r.id).join(', ')})`, async ({ page, portal }, testInfo) => {
       stopIfExpired();
       test.skip(!store.get('category-ready'), 'the P1 set-up test did not finish');
+      await touchAdmin(page);
       const files = batch.map((r) => ({ filename: r.upload_name, mime: 'application/pdf', data: readFileSync(join(golden!.dir, r.file)) }));
       let res = await upload(portal, ienv.portalUrl, ienv.tenant!, 'ingestion', files);
       if (res.status >= 500 || res.status === 0) res = await upload(portal, ienv.portalUrl, ienv.tenant!, 'ingestion', files);

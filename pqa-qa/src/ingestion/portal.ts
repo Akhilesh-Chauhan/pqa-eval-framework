@@ -10,9 +10,20 @@ export const ROUTES: Route[] = ['ingestion', 'ingestion-demo'];
 
 export class PortalSessionExpired extends Error {}
 
-/** GET /<slug>/api/auth/session renews the 1-hour access cookie from the 30-day refresh cookie. Anything but 200
- * means the session is gone: record "stop" so every later test skips, and throw. */
+/** A jar without the refresh cookie (the server cleared it on a 401) must not overwrite the saved session. */
+export const keepsSession = (cookies: Array<{ name: string }>): boolean => cookies.some((c) => c.name === 'pqa_refresh');
+
+const RENEW_MS = 15 * 60_000;
+
+/** The access cookie lives 1 h and the portal does not renew it from the refresh cookie once it is gone (Playwright
+ * drops expired cookies), so renew it while it has under 15 minutes left: POST /<slug>/api/auth/session/refresh
+ * re-sets both cookies. Then GET /<slug>/api/auth/session; anything but 200 means the session is gone: record "stop"
+ * so every later test skips, and throw. */
 export async function keepAlive(portal: APIRequestContext, base: string, slug: string): Promise<void> {
+  const access = (await portal.storageState()).cookies.find((c) => c.name === 'pqa_session');
+  if (!access || (access.expires > 0 && access.expires * 1000 - Date.now() < RENEW_MS)) {
+    await portal.post(`${base}/${slug}/api/auth/session/refresh`, { failOnStatusCode: false });
+  }
   const res = await portal.get(`${base}/${slug}/api/auth/session`, { failOnStatusCode: false });
   if (res.status() === 200) return;
   const reason = `portal session for ${slug} answered ${res.status()} — run npm run qa:ingest:provision again`;

@@ -7,6 +7,12 @@ import * as store from './store.js';
 /** The portal and the ingestion service each cache tenant config for 300 s and nothing invalidates it. */
 export const CACHE_WAIT_MS = 330_000;
 
+/** The admin session ends after about 1 h unused; portal-only stretches of the run would let it lapse. Any admin
+ * request renews it (the admin fixture then saves the rotated cookies). */
+export async function touchAdmin(page: Page): Promise<void> {
+  await page.request.get('/api/auth/session', { failOnStatusCode: false });
+}
+
 const message = async (res: { json(): Promise<any> }): Promise<string> => String((await res.json().catch(() => ({})))?.error?.message ?? '');
 
 /** Saves the setup's file rules through the edit page's own Save configuration body (captured with the PATCH

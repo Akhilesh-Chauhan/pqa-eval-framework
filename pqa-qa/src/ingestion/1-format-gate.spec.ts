@@ -4,7 +4,7 @@ import { loadGolden } from '../support/golden-manifest.js';
 import type { GateResult } from '../support/ingestion-scoring.js';
 import { classifyUpload, meets } from '../support/ingestion-http.js';
 import { SETUPS, acceptMatches } from '../support/ingestion-setups.js';
-import { applySetup } from './admin-config.js';
+import { applySetup, touchAdmin } from './admin-config.js';
 import { test, expect } from './fixtures.js';
 import { loadIngestEnv } from './ingest-env.js';
 import { ROUTES, clearDocuments, stopIfExpired, upload } from './portal.js';
@@ -32,8 +32,9 @@ test.describe('format gate', () => {
     });
 
     ROUTES.forEach((route, r) => {
-      test(`GI-PICK-0${s * 2 + r + 1} format gate ${setup.id} settings/${route} upload picker offers exactly ${setup.types.join(', ')}`, async ({ portalPage }) => {
+      test(`GI-PICK-0${s * 2 + r + 1} format gate ${setup.id} settings/${route} upload picker offers exactly ${setup.types.join(', ')}`, async ({ page, portalPage }) => {
         stopIfExpired();
+        await touchAdmin(page);
         test.skip(!live(setup.id), `${setup.id} is not in effect — its "apply" test did not finish`);
         await portalPage.goto(`${ienv.portalUrl}/${ienv.tenant}/settings/${route}`);
         const input = portalPage.locator('input[type=file]').first();
@@ -46,8 +47,9 @@ test.describe('format gate', () => {
       for (const c of cases) {
         const want = c.format_case!.expect[setup.id];
         const mime = c.format_case!.declared_mime;
-        test(`${c.id} format gate ${setup.id} ${route}: ${c.upload_name} (${mime ?? 'no MIME'}, ${c.bytes} bytes) → ${WORD[want]}`, async ({ portal }, testInfo) => {
+        test(`${c.id} format gate ${setup.id} ${route}: ${c.upload_name} (${mime ?? 'no MIME'}, ${c.bytes} bytes) → ${WORD[want]}`, async ({ page, portal }, testInfo) => {
           stopIfExpired();
+          await touchAdmin(page);
           test.skip(!live(setup.id), `${setup.id} is not in effect — its "apply" test did not finish`);
           const data = readFileSync(join(golden!.dir, c.file));
           const res = await upload(portal, ienv.portalUrl, ienv.tenant!, route, [{ filename: c.upload_name, mime: mime ?? undefined, data }]);

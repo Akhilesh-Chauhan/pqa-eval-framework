@@ -233,6 +233,11 @@ function topSteps(steps: TestStep[]): Row['steps'] {
   }));
 }
 
+/** The ingestion runner's summary (src/ingestion/3-summary.spec.ts) travels as an attachment; the reporter files it beside index.html. */
+export function summaryAttachment(attachments: TestResult['attachments']): Buffer | undefined {
+  return attachments.find((a) => a.name === 'ingestion-summary' && a.body)?.body;
+}
+
 class HtmlReport implements Reporter {
   private started = new Date();
   private dir = join('reports', this.started.toISOString().replace(/[:.]/g, '-'));
@@ -245,6 +250,11 @@ class HtmlReport implements Reporter {
 
   onTestEnd(test: TestCase, result: TestResult): void {
     const annotations = mergedAnnotations(test, result);
+    const summary = summaryAttachment(result.attachments);
+    if (summary) {
+      mkdirSync(this.dir, { recursive: true });
+      writeFileSync(join(this.dir, 'ingestion-summary.json'), summary);
+    }
     const shots: string[] = [];
     let pageUrl: string | undefined;
     for (const a of result.attachments) {
@@ -267,8 +277,8 @@ class HtmlReport implements Reporter {
       steps: topSteps(result.steps),
       errors: result.errors.map((e) => redact((e.message ?? '').replace(ANSI, ''))),
       notes: annotations
-        .filter((a) => ['precondition', 'known-gap', 'not-measured', 'skip'].includes(a.type) && a.description)
-        .map((a) => `${a.type === 'precondition' ? 'Precondition' : a.type === 'skip' ? 'Skipped' : 'Known gap'}: ${redact(a.description as string)}`),
+        .filter((a) => ['precondition', 'known-gap', 'not-measured', 'skip', 'note'].includes(a.type) && a.description)
+        .map((a) => `${a.type === 'precondition' ? 'Precondition' : a.type === 'skip' ? 'Skipped' : a.type === 'note' ? 'Note' : 'Known gap'}: ${redact(a.description as string)}`),
       shots,
       pageUrl,
     });

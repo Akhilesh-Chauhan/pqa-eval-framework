@@ -30,7 +30,7 @@ export function redact(text: string, env: NodeJS.ProcessEnv = process.env): stri
 }
 
 export function testId(title: string): string | undefined {
-  return /^(SA-[A-Z]+-\d+)\b/.exec(title)?.[1];
+  return /^((?:SA|GI)-[A-Z]+-\d+)\b/.exec(title)?.[1];
 }
 
 export function reproMarkdown(f: Failure): string {

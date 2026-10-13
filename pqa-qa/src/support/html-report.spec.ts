@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { parseCatalogue, renderReport } from './html-report.js';
+import { parseCatalogue, renderReport, summaryAttachment } from './html-report.js';
 import type { Row } from './html-report.js';
 
 const MD = [
@@ -35,4 +35,10 @@ test('renderReport counts outcomes, escapes text and lists coverage', () => {
   expect(html).toContain('2 of 2 catalogue cases executed');
   expect(html).toContain('data-status="fail" data-area="WBAS"');
   expect(html).toContain('>50%<');
+});
+
+test('summaryAttachment picks the ingestion summary out of a test result', () => {
+  const body = Buffer.from('{"gate":{}}');
+  expect(summaryAttachment([{ name: 'screenshot', contentType: 'image/png', body: Buffer.from('x') }, { name: 'ingestion-summary', contentType: 'application/json', body }])).toEqual(body);
+  expect(summaryAttachment([{ name: 'other', contentType: 'application/json', body }])).toBeUndefined();
 });

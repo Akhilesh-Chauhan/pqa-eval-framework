@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { loadIngestEnv, portalSessionFile } from '../ingestion/ingest-env.js';
+import { existingTenantStatus, loadIngestEnv, portalSessionFile } from '../ingestion/ingest-env.js';
 
 const base = { PQA_ADMIN_URL: 'https://admin.example', PQA_ADMIN_EMAIL: 'a@x.gov.in', PQA_BASE_URL: 'https://portal.example', PQA_ADMIN_TENANT_ADMIN_NAME: 'T', PQA_ADMIN_TENANT_ADMIN_EMAIL: 't@x.gov.in' };
 
@@ -15,4 +15,10 @@ test('golden dir and tenant are optional; the portal sign-in email defaults to t
   expect([e.goldenDir, e.tenant, e.ingestAdminEmail]).toEqual([undefined, undefined, 't@x.gov.in']);
   expect(loadIngestEnv({ ...base, PQA_INGEST_ADMIN_EMAIL: 'p@x.gov.in' }).ingestAdminEmail).toBe('p@x.gov.in');
   expect(portalSessionFile('qi1a2b')).toMatch(/src\/\.auth\/portal-qi1a2b\.json$/);
+});
+
+test('existingTenantStatus: only a 404 means the tenant is gone; any other failure stops provisioning', () => {
+  expect(existingTenantStatus(200, { data: { tenant: { status: 'active' } } })).toBe('active');
+  expect(existingTenantStatus(404, {})).toBe('missing');
+  for (const s of [401, 500, 502]) expect(() => existingTenantStatus(s, {})).toThrow(new RegExp(`${s}`));
 });

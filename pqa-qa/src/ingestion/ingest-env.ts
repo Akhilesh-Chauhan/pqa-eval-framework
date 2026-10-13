@@ -18,6 +18,14 @@ export interface IngestEnv extends AdminEnv {
   ingestAdminEmail?: string;
 }
 
+/** The existing tenant's status from GET /api/tenants/<slug>. Only a 404 means it is gone and may be replaced: any
+ * other failure (401, 5xx) must stop provisioning, or a second tenant would claim another real ministry. */
+export function existingTenantStatus(httpStatus: number, body: any): string {
+  if (httpStatus === 404) return 'missing';
+  if (httpStatus !== 200) throw new Error(`GET /api/tenants answered ${httpStatus} — not provisioning a second tenant; retry, or check PQA_INGEST_TENANT`);
+  return String(body?.data?.tenant?.status);
+}
+
 export function loadIngestEnv(src: NodeJS.ProcessEnv = process.env): IngestEnv {
   const opt = (key: string): string | undefined => src[key]?.trim() || undefined;
   const tenant = opt('PQA_INGEST_TENANT');

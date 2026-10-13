@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { test, expect, requireWrites } from '../admin/fixtures.js';
 import { fillWizardToReview } from '../admin/wizard.js';
 import { setEnvLine } from '../support/env-file.js';
-import { loadIngestEnv } from './ingest-env.js';
+import { existingTenantStatus, loadIngestEnv } from './ingest-env.js';
 
 // Creates the disposable ingestion tenant qi#### once (spec §4.1). `npm run qa:ingest:provision` then runs
 // scripts/portal-login.mjs to sign in to its portal. Rerunning is safe: a live PQA_INGEST_TENANT is kept.
@@ -14,7 +14,7 @@ test('create the disposable ingestion tenant and record it as PQA_INGEST_TENANT'
   test.setTimeout(180_000);
   if (ienv.tenant) {
     const res = await page.request.get(`/api/tenants/${ienv.tenant}`);
-    const status: string = res.status() === 200 ? (await res.json()).data.tenant.status : 'missing';
+    const status = existingTenantStatus(res.status(), await res.json().catch(() => ({})));
     test.skip(status !== 'archived' && status !== 'missing', `${ienv.tenant} already exists (${status}) — nothing to do`);
   }
   const slug = `qi${createHash('sha1').update(`${Date.now()}`).digest('hex').slice(0, 4)}`;

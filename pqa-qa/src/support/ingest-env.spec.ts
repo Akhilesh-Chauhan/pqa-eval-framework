@@ -17,6 +17,12 @@ test('golden dir and tenant are optional; the portal sign-in email defaults to t
   expect(portalSessionFile('qi1a2b')).toMatch(/src\/\.auth\/portal-qi1a2b\.json$/);
 });
 
+test('PQA_INGEST_CATEGORY is a comma-separated list; blank means every category', () => {
+  expect(loadIngestEnv(base).categories).toBeUndefined();
+  expect(loadIngestEnv({ ...base, PQA_INGEST_CATEGORY: ' , ' }).categories).toBeUndefined();
+  expect(loadIngestEnv({ ...base, PQA_INGEST_CATEGORY: 'Advisory, Parliamentary Q&A' }).categories).toEqual(['Advisory', 'Parliamentary Q&A']);
+});
+
 test('existingTenantStatus: only a 404 means the tenant is gone; any other failure stops provisioning', () => {
   expect(existingTenantStatus(200, { data: { tenant: { status: 'active' } } })).toBe('active');
   expect(existingTenantStatus(404, {})).toBe('missing');

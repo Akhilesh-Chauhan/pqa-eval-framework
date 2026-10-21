@@ -64,6 +64,15 @@ test('summarize counts gate errors and builds the confusion table', () => {
   expect(s.category).toMatchObject({ files: 3, accepted: 2, notMeasured: 1, accuracy: 0.5, lowConfidence: 1 });
   expect(s.category.confusion).toEqual({ orders: { orders: 1 }, acts: { others: 1 } });
   expect(s.metadata).toMatchObject({ documents: 1, documentsAllFieldsMatch: 0, fieldAccuracy: 0.5 });
+  expect(s.category.byCategory).toEqual({
+    Circular: { files: 1, correct: 1, fieldsChecked: 2, fieldsPassed: 1 },
+    Bill: { files: 1, correct: 0, fieldsChecked: 0, fieldsPassed: 0 },
+  });
+});
+
+test('an expected date with no date in it is reported, never failed', () => {
+  const s = scoreField('date', '1968 (exact date not stated in document)', { date: '1968' });
+  expect([s.pass, s.expected, s.actual]).toEqual([null, '1968 (exact date not stated in document)', '1968']);
 });
 
 test('withUnrecorded lists files a run never recorded as not measured, instead of dropping them', () => {

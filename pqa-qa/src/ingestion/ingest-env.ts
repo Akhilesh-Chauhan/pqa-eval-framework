@@ -16,6 +16,8 @@ export interface IngestEnv extends AdminEnv {
   tenant?: string;
   /** Who signs in to the tenant portal: PQA_INGEST_ADMIN_EMAIL, else PQA_ADMIN_TENANT_ADMIN_EMAIL. */
   ingestAdminEmail?: string;
+  /** PQA_INGEST_CATEGORY — comma-separated categories to run (each is its own golden dataset); unset runs all. */
+  categories?: string[];
 }
 
 /** The existing tenant's status from GET /api/tenants/<slug>. Only a 404 means it is gone and may be replaced: any
@@ -31,5 +33,6 @@ export function loadIngestEnv(src: NodeJS.ProcessEnv = process.env): IngestEnv {
   const tenant = opt('PQA_INGEST_TENANT');
   if (tenant && !SLUG.test(tenant)) throw new Error(`PQA_INGEST_TENANT=${tenant} is not a disposable ingestion tenant (qi + 4 hex) — refusing to touch it`);
   const admin = loadAdminEnv(src);
-  return { ...admin, goldenDir: opt('PQA_GOLDEN_DIR'), tenant, ingestAdminEmail: opt('PQA_INGEST_ADMIN_EMAIL') ?? admin.tenantAdmin?.email };
+  const categories = opt('PQA_INGEST_CATEGORY')?.split(',').map((c) => c.trim()).filter(Boolean);
+  return { ...admin, goldenDir: opt('PQA_GOLDEN_DIR'), tenant, ingestAdminEmail: opt('PQA_INGEST_ADMIN_EMAIL') ?? admin.tenantAdmin?.email, categories: categories?.length ? categories : undefined };
 }

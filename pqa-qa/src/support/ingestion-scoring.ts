@@ -75,7 +75,7 @@ export interface FieldScore {
   expected: string;
   actual: string;
   score: number;
-  /** null for long text: reported, never pass/fail. */
+  /** null when reported but never pass/fail: long text, or an expected date with no date in it ("1968 (exact date not stated)"). */
   pass: boolean | null;
 }
 
@@ -99,7 +99,8 @@ export function scoreField(field: string, expected: string | string[], actualMet
   const scores = candidates.map(score);
   const best = Math.max(...scores);
   const need = kind === 'id' || kind === 'date' ? 1 : MATCH;
-  return { field, kind, expected: exp, actual: flat(candidates[scores.indexOf(best)]), score: Math.round(best * 100) / 100, pass: kind === 'long' ? null : best >= need };
+  const unscored = kind === 'long' || (kind === 'date' && parseDate(exp) === undefined);
+  return { field, kind, expected: exp, actual: flat(candidates[scores.indexOf(best)]), score: Math.round(best * 100) / 100, pass: unscored ? null : best >= need };
 }
 
 export interface GateResult {
@@ -135,14 +136,19 @@ export function summarize(gate: GateResult[], cat: CatResult[], expectedChecks =
   const falseRefusals = gate.filter((g) => g.expect === 'A' && g.outcome !== 'accept');
   const accepted = cat.filter((c) => c.outcome === 'accept');
   const confusion: Record<string, Record<string, number>> = {};
-  const byCategory: Record<string, { files: number; correct: number }> = {};
+  const byCategory: Record<string, { files: number; correct: number; fieldsChecked: number; fieldsPassed: number }> = {};
   for (const c of accepted) {
     const row = (confusion[c.expected_type] ??= {});
     const got = c.actual_type ?? 'none';
     row[got] = (row[got] ?? 0) + 1;
-    const b = (byCategory[c.user_category] ??= { files: 0, correct: 0 });
+    const b = (byCategory[c.user_category] ??= { files: 0, correct: 0, fieldsChecked: 0, fieldsPassed: 0 });
     b.files++;
     if (c.actual_type === c.expected_type) b.correct++;
+    if (c.truth_status !== 'verified') continue;
+    for (const f of c.fields.filter((x) => x.pass !== null)) {
+      b.fieldsChecked++;
+      if (f.pass) b.fieldsPassed++;
+    }
   }
   const verified = accepted.filter((c) => c.truth_status === 'verified');
   const scored = verified.flatMap((c) => c.fields.map((f) => ({ type: c.expected_type, f }))).filter((x) => x.f.pass !== null);

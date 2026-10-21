@@ -72,3 +72,15 @@ export function loadGolden(dir: string): Golden {
   if (problems.length) throw new Error(`golden manifest ${path} is invalid:\n${problems.join('\n')}`);
   return { version: head.success ? head.data.version : '', rows, dir };
 }
+
+/** The category rows, or only those whose user_category is in `only` (any case). An unknown name throws: a typo
+ * must not run, and report, an empty dataset. */
+export function categoryRows(golden: Golden, only?: string[]): GoldenRow[] {
+  const rows = golden.rows.filter((r) => r.group === 'category');
+  if (!only) return rows;
+  const want = new Set(only.map((c) => c.toLowerCase()));
+  const known = [...new Set(rows.map((r) => r.user_category))];
+  const unknown = only.filter((c) => !known.some((k) => k.toLowerCase() === c.toLowerCase()));
+  if (unknown.length) throw new Error(`PQA_INGEST_CATEGORY: no category ${unknown.join(', ')} in the golden dataset (it has ${known.join(', ')})`);
+  return rows.filter((r) => want.has(r.user_category.toLowerCase()));
+}

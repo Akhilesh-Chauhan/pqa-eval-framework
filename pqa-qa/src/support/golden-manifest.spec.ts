@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect } from '@playwright/test';
-import { loadGolden } from './golden-manifest.js';
+import { categoryRows, loadGolden } from './golden-manifest.js';
 
 const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex');
 const row = (over: Record<string, unknown> = {}) => ({
@@ -19,6 +19,14 @@ function dataset(rows: unknown[], head: unknown = { version: 'abc123def456', row
   writeFileSync(join(dir, 'manifest.jsonl'), [head, ...rows].map((r) => JSON.stringify(r)).join('\n') + '\n');
   return dir;
 }
+
+test('categoryRows picks one category in any case, and refuses a name the dataset does not have', () => {
+  const rows = [row(), row({ id: 'GI-CAT-002', user_category: 'Parliamentary Q&A' }), row({ id: 'GI-FMT-01', group: 'format' })] as Parameters<typeof categoryRows>[0]['rows'];
+  const g = { version: 'v', rows, dir: '' };
+  expect(categoryRows(g).map((r) => r.id)).toEqual(['GI-CAT-001', 'GI-CAT-002']);
+  expect(categoryRows(g, ['parliamentary q&a']).map((r) => r.id)).toEqual(['GI-CAT-002']);
+  expect(() => categoryRows(g, ['Circular', 'Circulars'])).toThrow(/no category Circulars .*it has Circular, Parliamentary Q&A/);
+});
 
 test('loads a valid manifest', () => {
   const g = loadGolden(dataset([row()]));

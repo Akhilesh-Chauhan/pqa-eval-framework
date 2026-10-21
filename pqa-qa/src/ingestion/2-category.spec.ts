@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { notMeasured } from '../support/annotations.js';
-import { loadGolden } from '../support/golden-manifest.js';
+import { categoryRows, loadGolden } from '../support/golden-manifest.js';
 import { classifyItem, matchResults } from '../support/ingestion-http.js';
 import type { Outcome } from '../support/ingestion-http.js';
 import { scoreField } from '../support/ingestion-scoring.js';
@@ -12,9 +12,9 @@ import { loadIngestEnv } from './ingest-env.js';
 import { clearDocuments, stopIfExpired, upload } from './portal.js';
 import * as store from './store.js';
 
-// Spec §4.2.3 and §5: under P1, ingest the 89 category PDFs through Settings → Ingestion in batches of 5, then
-// judge each file: type always, metadata when its truth is verified. A batch never fails the run: after one
-// retry its files are "not measured".
+// Spec §4.2.3 and §5: under P1, ingest the 89 category PDFs (or only the PQA_INGEST_CATEGORY ones) through
+// Settings → Ingestion in batches of 5, then judge each file: type always, metadata when its truth is verified.
+// A batch never fails the run: after one retry its files are "not measured".
 
 export interface StoredCat {
   outcome: Outcome;
@@ -25,7 +25,7 @@ export interface StoredCat {
 
 const ienv = loadIngestEnv();
 const golden = ienv.goldenDir ? loadGolden(ienv.goldenDir) : undefined;
-const rows = golden?.rows.filter((r) => r.group === 'category') ?? [];
+const rows = golden ? categoryRows(golden, ienv.categories) : [];
 const batches = Array.from({ length: Math.ceil(rows.length / 5) }, (_, i) => rows.slice(i * 5, i * 5 + 5));
 
 test.describe('category and metadata', () => {

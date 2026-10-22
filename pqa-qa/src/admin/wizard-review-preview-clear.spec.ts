@@ -2,17 +2,17 @@ import { writeFileSync } from 'node:fs';
 import type { Locator, Page } from '@playwright/test';
 import { test, expect, blockWrites } from './fixtures.js';
 import type { AdminEnv } from './admin-env.js';
-import { nextButton } from './wizard.js';
+import { DUMMY_BEDROCK, BEDROCK_MODELS, chooseBedrock, loadModels, mockBedrockModels, nextButton, packageRadio, pickPackage } from './wizard.js';
 import type { WizardData } from './wizard.js';
 
 // Create-tenant wizard: step 7 Review & Submit, the live portal preview, and Clear all
 // (components.md A3.8–A3.10). Every test aborts all non-GET /api calls (blockWrites) before
-// opening the wizard. SA-WREV-05/06 answer POST /api/tenants in the browser — nothing reaches
-// the server. The LLM key is always a dummy.
+// opening the wizard. SA-WREV-05/06 answer POST /api/tenants, and SA-WCLR-14 the Bedrock model
+// list, in the browser — nothing reaches the server. The LLM keys are always dummies.
 
 type Writes = Awaited<ReturnType<typeof blockWrites>>;
 
-const STEPS = ['Basic Info', 'Branding', 'Assistant & Logos', 'LLM Config', 'File Rules', 'Departments', 'Sources & modules', 'Review & Submit'];
+const STEPS = ['Basic Info', 'Branding', 'Assistant & Logos', 'LLM Config', 'File Rules', 'Departments', 'Sources', 'Review & Submit'];
 const LLM = { apiKey: 'dummy-key', baseUrl: 'https://negd-gpus.in', model: 'qa-chat-model', embeddingModel: 'qa-embed-model' };
 const DIVISION = { name: 'QA Division', short: 'QAD', desc: 'Handles QA questions' };
 const SOURCE = 'https://www.india.gov.in';
@@ -78,18 +78,23 @@ async function openWizardAt(page: Page, env: AdminEnv, to: number): Promise<Wiza
   return d;
 }
 
-/** Jumps with the step list at the top of the wizard, e.g. "8. Review & Submit". */
+/** Jumps with the step list at the top of the wizard; its buttons read e.g. "Step 8: Review & Submit, current step". */
 async function jump(page: Page, n: number): Promise<void> {
-  await page.getByRole('button', { name: `${n + 1}. ${STEPS[n]}`, exact: true }).click();
+  await page.getByRole('button', { name: new RegExp(`^Step ${n + 1}: ${STEPS[n]!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(,|$)`) }).click();
   await onStep(page, n);
 }
 
+/** Branding's collapsed panel of the 21 tokens ("Exact tokens (advanced)"; earlier "Show advanced: pin exact tokens"). */
+const advancedTokens = (page: Page) => page.getByRole('button', { name: /^(Exact tokens \(advanced\)|Show advanced: pin exact tokens)/ });
+/** The pinned "brand" token's field in that panel (A3.2 calls it #override-brand; the live field is labelled by its token). */
+const brandToken = (page: Page) => page.getByRole('textbox', { name: 'brand', exact: true });
+
 async function addDivision(page: Page, v: { name?: string; short?: string; desc?: string }): Promise<void> {
-  await page.getByRole('button', { name: '+ Add division' }).click();
+  await page.getByRole('button', { name: /^\+? ?Add division$/ }).click();
   const last = (name: string) => page.getByRole('textbox', { name, exact: true }).last();
   if (v.name) await last('Division name').fill(v.name);
   if (v.short) await last('Short name').fill(v.short);
-  if (v.desc) await last('What this division handles').fill(v.desc);
+  if (v.desc) await last('Description').fill(v.desc);
 }
 
 async function addSource(page: Page, url: string): Promise<void> {
@@ -131,23 +136,26 @@ test.describe('A3.8 Step 7 — Review & Submit', () => {
       await nextButton(page).click();
       await onStep(page, 7);
     });
-    const rows: Array<[label: string, value: string, step: number]> = [
-      ['Ministry name', d.ministry, 0],
-      ['Portal path', `/${d.slug}`, 0],
-      ['Primary color', '#4338ca', 1],
-      ['Assistant name', 'QA Assistant', 2],
-      ['LLM', `on_prem — ${LLM.model}`, 3],
-      ['Max upload size', '10 MB', 4],
-      ['Departments', '1', 5],
-      ['Source websites', '1', 6],
-      ['OpenAPI YAML', 'spec.yaml', 6],
+    // The live summary is one region per step (term/definition rows, one "Edit <step>" each) and words its counts
+    // ("1 division", "1 URL"); A3.8 lists the rows with an Edit link per row.
+    const rows: Array<[label: string, value: string]> = [
+      ['Ministry name', d.ministry],
+      ['Portal path', `/${d.slug}`],
+      ['Primary color', '#4338ca'],
+      ['Assistant name', 'QA Assistant'],
+      ['Provider', 'on_prem'],
+      ['Chat model', LLM.model],
+      ['Max upload size', '10 MB'],
+      ['Divisions', '1 division'],
+      ['Source websites', '1 URL'],
+      ['OpenAPI YAML', 'spec.yaml'],
     ];
     await test.step(`Expect the rows: ${rows.map(([label, value]) => `${label} ${value}`).join(' · ')}`, async () => {
       for (const [label, value] of rows) await reviewRow(page, label, value);
     });
-    for (const [i, [label, , step]] of rows.entries()) {
-      await test.step(`Click Edit on "${label}" — expect step ${step} "${STEPS[step]}"; return with the step list "8. Review & Submit"`, async () => {
-        await page.getByRole('button', { name: 'Edit', exact: true }).nth(i).click();
+    for (let step = 0; step < 7; step++) {
+      await test.step(`Click "Edit ${STEPS[step]}" — expect step ${step} "${STEPS[step]}"; return with the step list "Step 8: Review & Submit"`, async () => {
+        await page.getByRole('button', { name: `Edit ${STEPS[step]}`, exact: true }).click();
         await onStep(page, step);
         await jump(page, 7);
       });
@@ -203,7 +211,7 @@ test.describe('A3.8 Step 7 — Review & Submit', () => {
     await test.step('Press Create tenant', async () => {
       await page.getByRole('button', { name: 'Create tenant' }).click();
     });
-    const error = message(page, 'A portal for X already exists');
+    const error = page.getByRole('main').getByText('A portal for X already exists', { exact: true }); // not the toast copy
     await test.step('Expect "A portal for X already exists" in red, above the footer buttons', async () => {
       await expect(error).toBeVisible();
       // Through a canvas so any CSS colour syntax (rgb, oklch…) comes back as RGB.
@@ -214,8 +222,10 @@ test.describe('A3.8 Step 7 — Review & Submit', () => {
         return [...ctx.getImageData(0, 0, 1, 1).data];
       });
       expect(r, `rgb(${r}, ${g}, ${b}) is red`).toBeGreaterThan(Math.max(g, b));
-      const footer = await page.getByRole('button', { name: 'Back', exact: true }).boundingBox();
-      expect((await error.boundingBox())?.y).toBeLessThan(footer?.y ?? 0);
+      // The footer bar is pinned to the viewport now, so compare page order, not pixels.
+      const back = page.getByRole('button', { name: 'Back', exact: true });
+      const before = await error.evaluate((el, b) => !!(el.compareDocumentPosition(b!) & Node.DOCUMENT_POSITION_FOLLOWING), await back.elementHandle());
+      expect(before, 'the error comes before the footer buttons').toBe(true);
     });
     await test.step('Expect still on step 7 with the draft intact (ministry and portal path rows)', async () => {
       await onStep(page, 7);
@@ -257,6 +267,8 @@ test.describe('A3.8 Step 7 — Review & Submit', () => {
 });
 
 const preview = (page: Page) => page.getByRole('complementary', { name: 'Portal preview' });
+/** The preview's nav entries: no navigation landmark on the live build, so the parent of "Settings" (in every package). */
+const previewNav = (page: Page) => preview(page).getByText('Settings', { exact: true }).first().locator('xpath=..');
 const shows = (scope: Locator, text: string) => scope.getByText(text, { exact: true }).or(scope.getByPlaceholder(text, { exact: true })).first();
 
 /** Every colour, background and gradient computed inside the preview, as one comparable string. */
@@ -296,20 +308,22 @@ test.describe('A3.9 Live portal preview', () => {
     const writes = await blockWrites(page);
     const d = await openWizardAt(page, env, 0);
     const strip = preview(page).getByText(/^https?:\/\/\S+$/);
-    await test.step('With no slug: expect "Advanced Dashboard" pressed and the strip ending "/…/parliament/advanced-dashboard"', async () => {
-      await expect(preview(page).getByRole('button', { name: 'Advanced Dashboard', exact: true })).toHaveAttribute('aria-pressed', 'true');
-      await expect(strip).toHaveText(/\/…\/parliament\/advanced-dashboard$/);
+    const dashboard = preview(page).getByRole('button', { name: /^(Advanced|Executive) Dashboard$/ });
+    await test.step('With no slug: expect the default dashboard button pressed and the strip ending "/…/parliament/executive-dashboard"', async () => {
+      await expect(dashboard).toHaveAttribute('aria-pressed', 'true');
+      test.info().annotations.push({ type: 'note', description: `A3.9 names the default screen "Advanced Dashboard"; the button reads "${await dashboard.innerText()}".` });
+      await expect(strip).toHaveText(/\/…\/parliament\/executive-dashboard$/);
     });
-    const slug = await test.step(`Choose "${d.ministry}" — expect the strip to end "/<derived slug>/parliament/advanced-dashboard"`, async () => {
+    const slug = await test.step(`Choose "${d.ministry}" — expect the strip to end "/<derived slug>/parliament/executive-dashboard"`, async () => {
       await page.locator('#ministryId').selectOption({ label: d.ministry });
       await expect(page.locator('#slug')).not.toHaveValue('');
       const derived = await page.locator('#slug').inputValue();
-      await expect(strip).toHaveText(new RegExp(`/${derived}/parliament/advanced-dashboard$`));
+      await expect(strip).toHaveText(new RegExp(`/${derived}/parliament/executive-dashboard$`));
       return derived;
     });
-    for (const screen of ['Generate', 'Parliament Dashboard', 'Advanced Dashboard']) {
+    for (const screen of ['Generate', 'Parliament Dashboard', 'Executive Dashboard']) {
       await test.step(`Click "${screen}" — expect it pressed and the strip on /${slug}/`, async () => {
-        const button = preview(page).getByRole('button', { name: screen, exact: true });
+        const button = screen === 'Executive Dashboard' ? dashboard : preview(page).getByRole('button', { name: screen, exact: true });
         await button.click();
         await expect(button).toHaveAttribute('aria-pressed', 'true');
         await expect(strip).toContainText(`/${slug}/`);
@@ -322,7 +336,7 @@ test.describe('A3.9 Live portal preview', () => {
     const writes = await blockWrites(page);
     await openWizardAt(page, env, 0);
     await test.step('Click "Search" in the preview navigation — expect to stay on /tenants/new, step 0', async () => {
-      await preview(page).getByRole('navigation').getByText('Search', { exact: true }).click({ force: true });
+      await previewNav(page).getByText('Search', { exact: true }).click({ force: true });
       await expect(page).toHaveURL(/\/tenants\/new$/);
       await onStep(page, 0);
     });
@@ -373,12 +387,12 @@ test.describe('A3.9 Live portal preview', () => {
   test('SA-WPRV-06 a pinned brand token overrides the derived shade', async ({ page, env }) => {
     const writes = await blockWrites(page);
     await openWizardAt(page, env, 1);
-    await test.step('Press "Show advanced: pin exact tokens" — expect no #ff0000 in the preview yet', async () => {
-      await page.getByRole('button', { name: 'Show advanced: pin exact tokens' }).click();
+    await test.step('Open "Exact tokens (advanced)" — expect no #ff0000 in the preview yet', async () => {
+      await advancedTokens(page).click();
       expect(await paint(page)).not.toContain('rgb(255, 0, 0)');
     });
-    await test.step('Set token "brand" (#override-brand) to #ff0000 — expect the preview to use rgb(255, 0, 0)', async () => {
-      await page.locator('#override-brand').fill('#ff0000');
+    await test.step('Set token "brand" to #ff0000 — expect the preview to use rgb(255, 0, 0)', async () => {
+      await brandToken(page).fill('#ff0000');
       await expect.poll(() => paint(page)).toContain('rgb(255, 0, 0)');
     });
     await nothingSent(writes);
@@ -393,7 +407,8 @@ test.describe('A3.9 Live portal preview', () => {
       await requested;
     });
     await test.step('Expect no visible /nope.png image in the preview; record the field\'s own preview', async () => {
-      await expect(preview(page).locator('img[src*="nope.png"]:visible')).toHaveCount(0);
+      // The 404 for a wrong path takes about 10 s on the live build (see SA-WAST-11): wait for the preview to react.
+      await expect(preview(page).locator('img[src*="nope.png"]:visible')).toHaveCount(0, { timeout: 30_000 });
       const outside = await page.locator('img[src*="nope.png"]:visible').count();
       test.info().annotations.push({ type: 'question', description: `The portal preview hides the broken wordmark; outside it ${outside} broken /nope.png image(s) are visible (the field's own preview, A3.3). Confirm both behaviours are intended.` });
     });
@@ -403,7 +418,7 @@ test.describe('A3.9 Live portal preview', () => {
   test('SA-WPRV-08 unticking Knowledge-base Search removes Search from the preview nav', async ({ page, env }) => {
     const writes = await blockWrites(page);
     await openWizardAt(page, env, 6);
-    const nav = preview(page).getByRole('navigation');
+    const nav = previewNav(page);
     await test.step('Expect "Search" in the preview navigation', async () => expect(nav).toContainText('Search'));
     await test.step('Untick "Knowledge-base Search" — expect "Search" gone from the preview navigation', async () => {
       await page.getByRole('checkbox', { name: 'Knowledge-base Search', exact: true }).uncheck();
@@ -487,6 +502,26 @@ test.describe('A3.9 Live portal preview', () => {
     });
     await nothingSent(writes);
   });
+
+  test('SA-WPRV-13 the preview navigation follows the step 0 package', async ({ page, env }) => {
+    const writes = await blockWrites(page);
+    await openWizardAt(page, env, 0);
+    const nav = previewNav(page);
+    await test.step('Expect "Platform + AI Assistant" checked and "Search" in the preview navigation', async () => {
+      await expect(packageRadio(page, 'Platform + AI Assistant')).toBeChecked();
+      await expect(nav).toContainText('Search');
+    });
+    await test.step('Choose "Platform only" — expect "Search" gone (no AI Assistant or KB Docs)', async () => {
+      await pickPackage(page, 'Platform only');
+      await expect(nav).not.toContainText('Search');
+    });
+    await test.step('Choose "AI Assistant only" — expect "Search" back; record the preview navigation', async () => {
+      await pickPackage(page, 'AI Assistant only');
+      await expect(nav).toContainText('Search');
+      test.info().annotations.push({ type: 'question', description: `A3.9 does not list the entries an AI-Assistant-only preview drops. Preview navigation: "${(await nav.innerText()).replace(/\s+/g, ' ').trim()}".` });
+    });
+    await nothingSent(writes);
+  });
 });
 
 const clearDialog = (page: Page) => page.getByRole('dialog', { name: 'Clear all fields on this step?' });
@@ -498,7 +533,7 @@ async function clearStep(page: Page, choice: 'Clear all' | 'Cancel' = 'Clear all
   await expect(clearDialog(page)).toBeHidden();
 }
 
-const LOGOS = ['Ministry crest', 'App icon (collapsed sidebar)', 'App wordmark (expanded sidebar)', 'Assistant avatar', 'Assistant avatar (on color)', 'Assistant splash logo', 'Assistant splash logo (on color)'];
+const LOGOS = ['Ministry crest', 'App icon (collapsed sidebar)', 'App wordmark (expanded sidebar)', 'Assistant avatar', 'Assistant avatar (on colour)', 'Assistant splash logo', 'Assistant splash logo (on colour)'];
 
 test.describe('A3.10 Clear all', () => {
   test('SA-WCLR-01 every step offers the same Clear all dialog', async ({ page, env }) => {
@@ -576,8 +611,8 @@ test.describe('A3.10 Clear all', () => {
       await page.locator('#userMsgColor').fill('#112233');
       await page.locator('#primaryColor').fill('#ff0000');
       await page.locator('#accentColor').fill('#00ff00');
-      await page.getByRole('button', { name: 'Show advanced: pin exact tokens' }).click();
-      await page.locator('#override-brand').fill('#123456');
+      await advancedTokens(page).click();
+      await brandToken(page).fill('#123456');
     });
     await test.step('Press Clear all and confirm — expect #e0e7ffcc, #4338ca, #0ea5e9 and the brand override blank', async () => {
       await clearStep(page);
@@ -585,9 +620,9 @@ test.describe('A3.10 Clear all', () => {
       await expect(page.locator('#primaryColor')).toHaveValue('#4338ca');
       await expect(page.locator('#accentColor')).toHaveValue('#0ea5e9');
       // The advanced panel may close on reset; reopen it to read the token.
-      const show = page.getByRole('button', { name: 'Show advanced: pin exact tokens' });
-      if (await show.isVisible()) await show.click();
-      await expect(page.locator('#override-brand')).toHaveValue('');
+      // The panel may close on reset; reopen it (only when the field is gone, or the toggle would close it) to read the token.
+      if (!(await brandToken(page).isVisible())) await advancedTokens(page).click();
+      await expect(brandToken(page)).toHaveValue('');
     });
     await test.step('Back to step 0 — expect ministry, slug and admin unchanged', async () => {
       await back(page);
@@ -674,10 +709,10 @@ test.describe('A3.10 Clear all', () => {
       await addDivision(page, { ...DIVISION, name: 'QA Division 1', short: 'QA1' });
       await addDivision(page, { ...DIVISION, name: 'QA Division 2', short: 'QA2' });
     });
-    await test.step('Press Clear all and confirm — expect no division rows and the "No departments yet" note', async () => {
+    await test.step('Press Clear all and confirm — expect no division rows and the "No divisions yet" note', async () => {
       await clearStep(page);
       await expect(page.getByRole('textbox', { name: 'Division name', exact: true })).toHaveCount(0);
-      await expect(page.getByText(/^No departments yet/)).toBeVisible();
+      await expect(page.getByText(/^No (divisions|departments) yet/)).toBeVisible();
     });
     await nothingSent(writes);
   });
@@ -769,6 +804,49 @@ test.describe('A3.10 Clear all', () => {
       await onStep(page, 6);
       await expect(page.getByRole('button', { name: `Remove ${SOURCE}`, exact: true })).toBeVisible();
       await expect(trustBox(page)).toBeChecked();
+    });
+    await nothingSent(writes);
+  });
+
+  test('SA-WCLR-13 Clear all on step 0 returns the package to Platform + AI Assistant', async ({ page, env }) => {
+    const writes = await blockWrites(page);
+    await openWizardAt(page, env, 0);
+    await test.step('Choose "Platform only"', async () => {
+      await pickPackage(page, 'Platform only');
+      await expect(packageRadio(page, 'Platform only')).toBeChecked();
+    });
+    await test.step('Press Clear all and confirm — expect "Platform + AI Assistant" checked', async () => {
+      await clearStep(page);
+      await expect(packageRadio(page, 'Platform + AI Assistant')).toBeChecked();
+    });
+    await nothingSent(writes);
+  });
+
+  test('SA-WCLR-14 Clear all on step 3 discards the Bedrock keys and the loaded model list', async ({ page, env }) => {
+    const writes = await blockWrites(page);
+    await mockBedrockModels(page, BEDROCK_MODELS);
+    await openWizardAt(page, env, 3);
+    const draft = () => page.evaluate(() => Object.values(sessionStorage).join('\n'));
+    await test.step('Choose Bedrock with the dummy keys; Check credentials (answered in the browser); pick a chat and an embedding model', async () => {
+      await chooseBedrock(page);
+      await loadModels(page);
+    });
+    await test.step('Press Clear all and confirm — expect on-prem, https://negd-gpus.in and both models blank', async () => {
+      await clearStep(page);
+      await expect(page.locator('#provider')).toHaveValue('on_prem');
+      await expect(page.locator('#baseUrl')).toHaveValue('https://negd-gpus.in');
+      for (const id of ['#model', '#embeddingModel']) await expect(page.locator(id)).toHaveValue('');
+    });
+    await test.step('Choose Bedrock again — expect both key fields blank and neither key in sessionStorage', async () => {
+      await page.locator('#provider').selectOption('bedrock');
+      for (const id of ['#bedrockAccessKeyId', '#bedrockSecretAccessKey']) await expect(page.locator(id)).toHaveValue('');
+      for (const key of Object.values(DUMMY_BEDROCK)) await expect.poll(draft).not.toContain(key);
+    });
+    await test.step('Type the keys again without Check credentials; Next — expect "Check credentials and load models, then choose one." (the old list is stale)', async () => {
+      await chooseBedrock(page);
+      await nextButton(page).click();
+      await expect(message(page, 'Check credentials and load models, then choose one.').first()).toBeVisible();
+      await onStep(page, 3);
     });
     await nothingSent(writes);
   });

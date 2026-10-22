@@ -51,6 +51,14 @@ async function wizardStep0(page: Page, adminName: string): Promise<void> {
   await expect(page.locator('#brandingPreset')).toBeVisible();
 }
 
+/** A4.1 (21 Oct spec): the edit page shows one section at a time; open `name` from its settings menu when it has one. */
+async function openSection(page: Page, name: string): Promise<void> {
+  await page.waitForLoadState('networkidle');
+  const re = new RegExp(`^${name}`, 'i');
+  const entry = page.getByRole('link', { name: re }).or(page.getByRole('button', { name: re })).first();
+  if (await entry.isVisible()) await entry.click();
+}
+
 /** Create guard (G): the wizard never attempted POST /api/tenants. */
 function expectNoCreate(attempts: Array<{ method: string; path: string }>): void {
   expect(attempts.map((a) => `${a.method} ${a.path}`)).not.toContain('POST /api/tenants');
@@ -62,10 +70,12 @@ test.describe('LLM API key', () => {
     if (!key) test.info().annotations.push({ type: 'note', description: 'PQA_ADMIN_LLM_API_KEY not set: only the key-field check ran' });
     for (const path of ['/api/tenants', `/api/tenants/${env.testTenant}`]) {
       const res = await test.step(`GET ${path}`, () => page.request.get(path));
-      await test.step('Expect no non-empty apiKey/llmApiKey field and not the configured key anywhere in the body', async () => {
+      await test.step('Expect no non-empty API-key or Bedrock-key field and not the configured key anywhere in the body', async () => {
         expect(res.status()).toBe(200);
         const text = await res.text();
-        const filled = fieldsMatching(JSON.parse(text), /^(apiKey|llmApiKey)$/i).filter((f) => typeof f.value === 'string' && f.value !== '');
+        // 21 Oct spec §3.3: Bedrock keys are write-only too (only the internal llm-runtime route returns them).
+        const KEYS = /^(apiKey|llmApiKey|bedrockAccessKeyId|bedrockSecretAccessKey|awsAccessKeyId|awsSecretAccessKey|accessKeyId|secretAccessKey)$/i;
+        const filled = fieldsMatching(JSON.parse(text), KEYS).filter((f) => typeof f.value === 'string' && f.value !== '');
         expect(filled.map((f) => f.path), 'non-empty key fields').toEqual([]);
         if (key) expect(text.includes(key), 'the configured LLM API key appears in the response').toBe(false);
       });
@@ -80,8 +90,9 @@ test.describe('LLM API key', () => {
     page.on('response', (r) => {
       if (r.url().startsWith(env.adminUrl) && ['document', 'fetch', 'xhr'].includes(r.request().resourceType())) bodies.push(r.text().catch(() => ''));
     });
-    await test.step(`Open /tenants/${env.testTenant}/edit and let it finish loading`, async () => {
+    await test.step(`Open /tenants/${env.testTenant}/edit, let it finish loading, open LLM Config`, async () => {
       await page.goto(`/tenants/${env.testTenant}/edit`, { waitUntil: 'networkidle' });
+      await openSection(page, 'LLM Config');
       await expect(page.locator('#llmApiKey')).toBeAttached();
     });
     await test.step('Search the HTML/DOM, every document/fetch response (incl. RSC payloads) and all input values for the key', async () => {
@@ -94,15 +105,17 @@ test.describe('LLM API key', () => {
     });
   });
 
+  // Bedrock key masking: SA-WLLM-02. Bedrock keys never echoed by the model check: SA-WLLM-17.
   test('SA-SEC-03 the API key input is masked in the wizard and on the edit page', async ({ page, env }) => {
     const attempts = await blockWrites(page);
     await wizardWithMarkerKey(page);
-    await test.step('Go back to "4. LLM Config" — expect #llmApiKey type="password"', async () => {
-      await page.getByRole('button', { name: '4. LLM Config' }).click();
+    await test.step('Go back to step 4, LLM Config — expect #llmApiKey type="password"', async () => {
+      await page.getByRole('button', { name: /^Step 4: LLM Config\b/ }).click();
       await expect(page.locator('#llmApiKey')).toHaveAttribute('type', 'password');
     });
-    await test.step(`Open /tenants/${env.testTenant}/edit — expect #llmApiKey type="password"`, async () => {
+    await test.step(`Open /tenants/${env.testTenant}/edit › LLM Config — expect #llmApiKey type="password"`, async () => {
       await page.goto(`/tenants/${env.testTenant}/edit`);
+      await openSection(page, 'LLM Config');
       await expect(page.locator('#llmApiKey')).toHaveAttribute('type', 'password');
     });
     expectNoCreate(attempts);
@@ -226,7 +239,9 @@ test.describe('return_to open redirect', () => {
     await page.route((u) => u.origin !== origin, (route) =>
       route.request().isNavigationRequest() ? route.fulfill({ contentType: 'text/html', body: 'left the admin origin' }) : route.continue(),
     );
-    for (const target of ['//evil.com', 'https://evil.com', '/\\evil.com', 'javascript:alert(1)', '/tenants@evil.com']) {
+    // 21 Oct spec (§6.6): protocol-relative, absolute (even same-origin), backslash-bearing and credentialed values all collapse to /tenants.
+    const variants = ['//evil.com', 'https://evil.com', '/\\evil.com', '\\\\evil.com', '/tenants\\evil', 'javascript:alert(1)', '/tenants@evil.com', '//user@evil.com/tenants', `${origin}/admins`];
+    for (const target of variants) {
       await test.step(`Open /login?return_to=${encodeURIComponent(target)} — expect /tenants on the admin origin, no script run`, async () => {
         await page.goto(`/login?return_to=${encodeURIComponent(target)}`);
         await page.waitForURL((u) => u.pathname !== '/login', { timeout: 10_000 });
@@ -246,9 +261,10 @@ test.describe('Injection in the wizard', () => {
     const attempts = await blockWrites(page);
     await test.step('Open /tenants/new; step 0 valid; Next to Branding', () => wizardStep0(page, 'QA Admin'));
     for (const field of ['#primaryColor', '#userMsgColor', '#override-brand']) {
-      const showAdvanced = page.getByRole('button', { name: /^Show advanced/ });
+      // The toggle keeps one name ("Exact tokens (advanced) …") open or shut, so open it only while it is collapsed.
+      const showAdvanced = page.getByRole('button', { name: /^Exact tokens \(advanced\)/ });
       const open = async () => {
-        if (field === '#override-brand' && (await showAdvanced.isVisible())) await showAdvanced.click();
+        if (field === '#override-brand' && (await showAdvanced.getAttribute('aria-expanded')) !== 'true') await showAdvanced.click();
       };
       await open();
       const original = await page.locator(field).inputValue();
@@ -300,7 +316,7 @@ test.describe('Injection in the wizard', () => {
       await nextButton(page).click();
     });
     await test.step(`Step 5: + Add division, name ${XSS}, short name QAD`, async () => {
-      await page.getByRole('button', { name: '+ Add division' }).click();
+      await page.getByRole('button', { name: /^\+? ?Add division$/ }).click();
       await page.getByRole('textbox', { name: 'Division name' }).fill(XSS);
       await page.getByRole('textbox', { name: 'Short name' }).fill('QAD');
     });
@@ -321,7 +337,8 @@ test.describe('Injection in the wizard', () => {
 test.describe('Server-side rules', () => {
   test('SA-SEC-14 the Super Admin email domain rule is enforced by the server', async ({ page }) => {
     // Trailing-space and upper-case variants (SA-ADM-10) are left out: a server that normalises them
-    // would accept a valid domain and send a real code.
+    // would accept a valid domain and send a real code. The 21 Oct spec says the portal route refuses
+    // them too; that is SA-SEC-22 (Manual).
     for (const email of ['x@gmail.com', 'x@digitalindia.gov.in.evil.com', 'x@evil-digitalindia.gov.in', 'x@sub.digitalindia.gov.in']) {
       const res = await test.step(`POST /api/admins/otp/request body {"name":"QA","email":"${email}"}`, () =>
         page.request.post('/api/admins/otp/request', { data: { name: 'QA', email } }),

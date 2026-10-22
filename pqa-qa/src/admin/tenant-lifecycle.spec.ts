@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 import { test, expect, requireWrites } from './fixtures.js';
 import { loadAdminEnv } from './admin-env.js';
 import type { AdminEnv } from './admin-env.js';
@@ -8,8 +8,8 @@ import { DIVISIONS, LOGOS } from './tenant-profile.js';
 
 // One new tenant per ministry in PQA_ADMIN_TEST_MINISTRIES, each under a throwaway slug:
 // create → Active → Inactive → Suspended → Archive → Unarchive → Archive.
-// There is no delete. Archiving is the end state: it releases the ministry, but the
-// row stays listed as archived and the slug can never be reused (spec §3.8, §9.3).
+// Archiving is the end state: it releases the ministry, but the row stays listed as archived
+// and the slug can never be reused (spec §3.8, §9.3). The temporary hard delete (A2.1) is not used here.
 
 type Status = 'active' | 'inactive' | 'suspended' | 'archived';
 const LABEL: Record<Exclude<Status, 'archived'>, string> = { active: 'Active', inactive: 'Inactive', suspended: 'Suspended' };
@@ -20,11 +20,46 @@ async function apiStatus(page: Page, slug: string): Promise<Status> {
   return (await res.json()).data.tenant.status;
 }
 
+/** A4.1: the Configuration tab shows one section at a time; the settings menu switches between them.
+ * Whole words, case-sensitive, so the Configuration tab's own name never matches. */
+async function showSection(page: Page, name: string): Promise<void> {
+  const re = new RegExp(`(^|\\W)${name}(\\W|$)`);
+  const main = page.getByRole('main');
+  await main.getByRole('link', { name: re }).or(main.getByRole('button', { name: re })).or(main.getByRole('tab', { name: re })).first().click();
+}
+
+/** Opens the edit page on its Status section. */
+async function openStatus(page: Page, slug: string): Promise<void> {
+  await page.goto(`/tenants/${slug}/edit`);
+  await showSection(page, 'Status');
+}
+
+// A4.1a on the live build (22 Oct): no Portal status dropdown — the Status card shows the current status as text and
+// one button per move. Seen: inactive → "Activate portal" · "Suspend portal"; active → "Set portal inactive" ·
+// "Suspend portal"; suspended → "Reactivate portal" · "Archive ministry"; archived → "Unarchive ministry".
+const statusCard = (page: Page) => page.getByRole('region', { name: 'Status' });
+const MOVE: Record<Exclude<Status, 'archived'>, RegExp> = {
+  active: /^(Activate|Reactivate) portal$/,
+  suspended: /^Suspend portal$/,
+  inactive: /^Set portal inactive$/,
+};
+/** The status word the card shows. */
+const shownStatus = (page: Page) => statusCard(page).getByText(/^(active|inactive|suspended)$/).first();
+
+/** Presses `button`, then accepts its confirmation: a browser confirm, or an in-page dialog (never the UX4G widget,
+ * which is a dialog on every page) — the live build moved several confirmations into the page. */
+async function pressAndConfirm(page: Page, button: Locator): Promise<void> {
+  page.once('dialog', (d) => void d.accept());
+  await button.click();
+  const modal = page.getByRole('dialog').or(page.getByRole('alertdialog')).filter({ hasNotText: 'Accessibility Options' }).first();
+  if (await modal.waitFor({ timeout: 2_000 }).then(() => true, () => false)) await modal.getByRole('button', { name: /^(?!(Cancel|Close)$).+/ }).last().click();
+}
+
 async function setStatus(page: Page, slug: string, to: Exclude<Status, 'archived'>): Promise<void> {
-  await test.step(`Open /tenants/${slug}/edit and choose Portal status "${LABEL[to]}"`, async () => {
-    await page.goto(`/tenants/${slug}/edit`);
+  await test.step(`Open /tenants/${slug}/edit › Status and move it to "${LABEL[to]}"`, async () => {
+    await openStatus(page, slug);
     const saved = page.waitForResponse((r) => r.url().endsWith(`/api/tenants/${slug}/status`) && r.request().method() === 'PATCH');
-    await page.locator('#status').selectOption({ label: LABEL[to] });
+    await pressAndConfirm(page, statusCard(page).getByRole('button', { name: MOVE[to] }));
     expect((await saved).status()).toBe(200);
   });
   await test.step(`Expect "Portal status updated." and the API to report ${to}`, async () => {
@@ -95,11 +130,11 @@ for (const ministry of env.ministries) {
         type: 'precondition',
         description: `SA-WREV-07 created ${slug} for ${ministry} through the wizard with step 7 "Initial status" left on "Inactive (recommended)"; the POST /api/tenants body carried "status":"inactive".`,
       });
-      await test.step(`Open /tenants/${slug}/edit — expect Portal status "Inactive"`, async () => {
-        await page.goto(`/tenants/${slug}/edit`);
-        await expect(page.locator('#status')).toBeVisible();
+      await test.step(`Open /tenants/${slug}/edit › Status — expect Portal status "Inactive"`, async () => {
+        await openStatus(page, slug);
+        await expect(shownStatus(page)).toBeVisible();
         await testInfo.attach('manage-page-status', { body: await page.screenshot(), contentType: 'image/png' });
-        await expect.soft(page.locator('#status')).toHaveValue('inactive');
+        await expect.soft(shownStatus(page)).toHaveText('inactive');
       });
       await test.step(`GET /api/tenants/${slug} — expect status "inactive"`, async () => {
         expect.soft(await apiStatus(page, slug)).toBe('inactive');
@@ -135,18 +170,23 @@ for (const ministry of env.ministries) {
       // By design (developer, 2026-10-12): the status save moves updatedAt, so the
       // page must be reloaded before a configuration save.
       await setStatus(page, slug, 'active');
-      await test.step('Press Save configuration without reloading', async () => {
+      // Save is disabled until something changes (live build, 22 Oct): toggle the accessibility bar to have a save.
+      const bar = page.getByRole('switch', { name: 'Accessibility bar' });
+      await test.step('Choose Basic Info; toggle Accessibility bar; press Save configuration without reloading', async () => {
+        await showSection(page, 'Basic Info');
+        await bar.click();
         await page.getByRole('button', { name: 'Save configuration' }).click();
       });
       await test.step('Expect the "modified elsewhere" refresh alert', async () => {
         await expect(page.getByText(/modified elsewhere/i)).toBeVisible();
       });
-      await test.step('Reload, press Save configuration again', async () => {
+      await test.step('Reload, toggle Accessibility bar again, press Save configuration', async () => {
         await page.reload();
+        await bar.click();
         await page.getByRole('button', { name: 'Save configuration' }).click();
       });
       await test.step('Expect "Configuration saved." and the status unchanged (active)', async () => {
-        await expect(page.getByText('Configuration saved.')).toBeVisible();
+        await expect(page.getByText(/^Configuration saved\.?$/).first()).toBeVisible(); // A4.1 "Configuration saved."; the live toast has no full stop
         expect(await apiStatus(page, slug)).toBe('active');
       });
     });
@@ -160,15 +200,14 @@ for (const ministry of env.ministries) {
     });
 
     test('SA-ESTA-10 Archive: the tenant is archived and offers Unarchive', async ({ page }) => {
-      await test.step(`Open /tenants/${slug}/edit and press Archive (accept any confirmation)`, async () => {
-        await page.goto(`/tenants/${slug}/edit`);
-        page.once('dialog', (d) => d.accept());
-        await page.getByRole('button', { name: /^Archive\b/ }).click();
+      await test.step(`Open /tenants/${slug}/edit › Status and press Archive (accept any confirmation)`, async () => {
+        await openStatus(page, slug);
+        await pressAndConfirm(page, page.getByRole('button', { name: /^Archive\b/ }));
       });
       await test.step('Expect "Archived. A new portal can be created for this ministry." and an Unarchive button', async () => {
         await expect(page.getByText('Archived. A new portal can be created for this ministry.')).toBeVisible();
         await expect(page.getByRole('button', { name: /^Unarchive\b/ })).toBeVisible();
-        await expect(page.locator('#status')).toHaveCount(0);
+        await expect(page.getByRole('button', { name: /^(Activate|Suspend) portal$/ })).toHaveCount(0);
         expect(await apiStatus(page, slug)).toBe('archived');
       });
     });
@@ -200,20 +239,18 @@ for (const ministry of env.ministries) {
     });
 
     test('SA-ESTA-12 Unarchive returns the portal to suspended, not active; archive again', async ({ page, env }) => {
-      await test.step(`Open /tenants/${slug}/edit and press Unarchive`, async () => {
-        await page.goto(`/tenants/${slug}/edit`);
-        page.once('dialog', (d) => d.accept());
-        await page.getByRole('button', { name: /^Unarchive\b/ }).click();
+      await test.step(`Open /tenants/${slug}/edit › Status and press Unarchive`, async () => {
+        await openStatus(page, slug);
+        await pressAndConfirm(page, page.getByRole('button', { name: /^Unarchive\b/ }));
       });
       await test.step('Expect status suspended and the portal still unavailable', async () => {
-        await expect(page.locator('#status')).toHaveValue('suspended');
+        await expect(shownStatus(page)).toHaveText('suspended');
         expect(await apiStatus(page, slug)).toBe('suspended');
       });
       await expectPortal(page, env, slug, false);
       await test.step('Archive again so the ministry is released', async () => {
-        await page.goto(`/tenants/${slug}/edit`);
-        page.once('dialog', (d) => d.accept());
-        await page.getByRole('button', { name: /^Archive\b/ }).click();
+        await openStatus(page, slug);
+        await pressAndConfirm(page, page.getByRole('button', { name: /^Archive\b/ }));
         await expect(page.getByText('Archived. A new portal can be created for this ministry.')).toBeVisible();
       });
     });

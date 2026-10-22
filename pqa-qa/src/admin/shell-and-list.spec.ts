@@ -23,17 +23,34 @@ async function leaveLogin(page: Page, query: string): Promise<URL> {
 const setCookies = (res: APIResponse): string[] =>
   res.headersArray().filter((h) => h.name.toLowerCase() === 'set-cookie').map((h) => h.value);
 
-const row = (page: Page, slug: string) =>
-  page.locator('table tbody tr').filter({ has: page.getByRole('link', { name: `/${slug}`, exact: true }) });
+// A row by its portal link's href: the link's name is now "Open <ministry> portal (/<slug>) in a new tab".
+const row = (page: Page, slug: string) => page.locator('table tbody tr').filter({ has: page.locator(`a[href$="/${slug}"]`) });
+const portalLink = (page: Page, slug: string) => row(page, slug).locator(`a[href$="/${slug}"]`);
+
+/** The signed-in identity: A1.4's footer line, or (live, 22 Oct) the header greeting with the address's local part. */
+const signedIn = (page: Page, email: string) =>
+  page.getByText(`Signed in as ${email}`).or(page.getByRole('banner').getByText(email.split('@')[0]!)).first();
+
+/** Index of a column by its header text: A2.1 added a row checkbox, so positions are not fixed. Headers are styled
+ * upper-case, so compare the DOM text, ignoring case. */
+async function col(page: Page, name: string): Promise<number> {
+  await expect(page.locator('table thead tr').first()).toBeVisible();
+  const headers = await page.locator('table thead tr').first().locator(':scope > *').allTextContents();
+  const i = headers.findIndex((h) => h.trim().toLowerCase() === name.toLowerCase());
+  expect(i, `column "${name}" in ${JSON.stringify(headers)}`).toBeGreaterThanOrEqual(0);
+  return i;
+}
+const cell = async (page: Page, slug: string, name: string) => row(page, slug).locator(':scope > *').nth(await col(page, name));
 
 test.describe('A1.2 Sign-in page while signed in', () => {
-  test('SA-AUTH-18 a tampered return_to falls back to /tenants and never leaves the origin', async ({ page, env }) => {
+  test('SA-AUTH-18 a return_to outside /tenants and /admins falls back to /tenants and never leaves the origin', async ({ page, env }) => {
     const origin = new URL(env.adminUrl).origin;
     // If the redirect escapes, never actually load the other site.
     await page.route((u) => u.origin !== origin, (route) =>
       route.request().isNavigationRequest() ? route.fulfill({ contentType: 'text/html', body: 'left the admin origin' }) : route.continue(),
     );
-    for (const target of ['/evil', '//evil.com']) {
+    // 21 Oct spec (A1.2, §6.6): only a path equal to or under /tenants or /admins survives. Off-origin variants: SA-SEC-08.
+    for (const target of ['/evil', '/tenantsx', '/adminsx', '/api/tenants']) {
       const landed = await test.step(`Open /login?return_to=${encodeURIComponent(target)}`, () =>
         leaveLogin(page, `?return_to=${encodeURIComponent(target)}`),
       );
@@ -50,6 +67,13 @@ test.describe('A1.2 Sign-in page while signed in', () => {
     await test.step('Expect /tenants', async () => expect(plain.pathname).toBe('/tenants'));
     const admins = await test.step('Open /login?return_to=%2Fadmins', () => leaveLogin(page, '?return_to=%2Fadmins'));
     await test.step('Expect /admins', async () => expect(admins.pathname).toBe('/admins'));
+  });
+
+  test('SA-AUTH-36 a return_to under /tenants or /admins is kept with its query string', async ({ page }) => {
+    for (const target of ['/admins?x=1', '/tenants?q=qa', '/tenants/new']) {
+      const landed = await test.step(`Open /login?return_to=${encodeURIComponent(target)}`, () => leaveLogin(page, `?return_to=${encodeURIComponent(target)}`));
+      await test.step(`Expect ${target}`, async () => expect.soft(`${landed.pathname}${landed.search}`).toBe(target));
+    }
   });
 });
 
@@ -94,16 +118,18 @@ test.describe('A6 Session cookies', () => {
 });
 
 test.describe('A1.4 Navigation shell', () => {
+  // The live sidebar names its links by title only (22 Oct); the main area has its own "Create tenant" link.
   const ENTRIES = [
-    ['Tenants All ministries', '/tenants'],
-    ['Create tenant Provision a ministry', '/tenants/new'],
-    ['Admins Platform administrators', '/admins'],
+    ['Tenants', '/tenants'],
+    ['Create tenant', '/tenants/new'],
+    ['Admins', '/admins'],
   ] as const;
+  const sidebar = (page: Page) => page.getByRole('navigation', { name: 'Platform' });
 
   test('SA-NAV-01 the sidebar has Tenants, Create tenant and Admins', async ({ page }) => {
     await test.step('Open /tenants', () => page.goto('/tenants'));
-    await test.step('Expect "Tenants — All ministries", "Create tenant — Provision a ministry", "Admins — Platform administrators"', async () => {
-      for (const [name] of ENTRIES) await expect(page.getByRole('link', { name, exact: true })).toBeVisible();
+    await test.step('Expect sidebar links "Tenants", "Create tenant", "Admins"', async () => {
+      for (const [name] of ENTRIES) await expect(sidebar(page).getByRole('link', { name, exact: true })).toBeVisible();
     });
   });
 
@@ -112,17 +138,23 @@ test.describe('A1.4 Navigation shell', () => {
     await test.step('Open /admins', () => page.goto('/admins'));
     for (const [name, path] of ENTRIES) {
       await test.step(`Click "${name}" — expect ${path}`, async () => {
-        await page.getByRole('link', { name, exact: true }).click();
+        await sidebar(page).getByRole('link', { name, exact: true }).click();
         await expect(page).toHaveURL(new RegExp(`${path}$`));
       });
     }
   });
 
   test('SA-NAV-03 the footer shows the signed-in email and a sign-out control', async ({ page, env }) => {
+    await blockWrites(page);
     await test.step('Open /tenants', () => page.goto('/tenants'));
-    await test.step(`Expect "Signed in as ${env.adminEmail}" and a "Sign out" button (not pressed)`, async () => {
-      await expect(page.getByText(`Signed in as ${env.adminEmail}`)).toBeVisible();
-      await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible();
+    await test.step(`Expect ${env.adminEmail} and a "Sign out" control (not pressed): in the footer (A1.4), else in the Account menu`, async () => {
+      if (!(await page.getByRole('contentinfo').getByText(env.adminEmail).count())) {
+        test.info().annotations.push({ type: 'deviation', description: 'A1.4: the footer shows the signed-in email and sign-out; the live shell greets the user in the header and has an "Account menu".' });
+        await page.getByRole('button', { name: 'Account menu' }).click();
+      }
+      // The Account menu words it "Signed in as <email>".
+      await expect(page.getByText(env.adminEmail).first()).toBeVisible();
+      await expect(page.getByRole('menuitem', { name: /^Sign out$/i }).or(page.getByRole('button', { name: /^Sign out$/i })).first()).toBeVisible();
     });
   });
 
@@ -132,27 +164,27 @@ test.describe('A1.4 Navigation shell', () => {
       await route.continue().catch(() => {});
     });
     await test.step('Delay GET /api/auth/session by 2 s and open /tenants', () => page.goto('/tenants'));
-    await test.step('Expect "Checking sign-in…", then the signed-in email', async () => {
+    await test.step('Expect "Checking sign-in…", then the signed-in user', async () => {
       await expect(page.getByText('Checking sign-in…')).toBeVisible();
-      await expect(page.getByText(`Signed in as ${env.adminEmail}`)).toBeVisible({ timeout: 10_000 });
+      await expect(signedIn(page, env.adminEmail)).toBeVisible({ timeout: 10_000 });
     });
   });
 });
 
 test.describe('A2 Tenant list', () => {
-  test('SA-LIST-01 the table has Ministry, Status, Portal, Updated and a Manage button per row', async ({ page, env }) => {
+  test('SA-LIST-01 the table has Ministry, Status, Portal, Updated and a Manage control per row', async ({ page, env }) => {
     const t = (await apiTenants(page)).find((b) => b.tenant.slug === env.testTenant);
     await test.step('Open /tenants', () => page.goto('/tenants'));
     await test.step('Expect columns Ministry, Status, Portal, Updated', async () => {
       await expect(page.getByRole('columnheader')).toContainText(['Ministry', 'Status', 'Portal', 'Updated']);
     });
-    await test.step('Expect a Manage button on every row', async () => {
+    await test.step('Expect a Manage control on every row (a link "Manage <ministry>" on the live build)', async () => {
       const rows = page.locator('table tbody tr');
       await expect(rows.first()).toBeVisible();
-      await expect(rows.getByRole('button', { name: 'Manage' })).toHaveCount(await rows.count());
+      await expect(rows.getByRole('link', { name: /^Manage / }).or(rows.getByRole('button', { name: /^Manage\b/ }))).toHaveCount(await rows.count());
     });
     await test.step(`Expect the ${env.testTenant} row to show the ministry name with the slug beneath`, async () => {
-      const ministry = row(page, env.testTenant).locator('td').first();
+      const ministry = await cell(page, env.testTenant, 'Ministry');
       await expect(ministry).toContainText(t?.tenant.tenantName ?? '(not in GET /api/tenants)');
       await expect(ministry).toContainText(env.testTenant);
     });
@@ -163,8 +195,9 @@ test.describe('A2 Tenant list', () => {
     await test.step('Open /tenants', () => page.goto('/tenants'));
     const table = await test.step('Read the slug (Portal column) and status of every row', async () => {
       await expect(page.locator('table tbody tr').first()).toBeVisible();
-      return page.locator('table tbody tr').evaluateAll((rows) =>
-        rows.map((r) => ({ slug: r.children[2]?.textContent?.trim().replace(/^\//, ''), status: r.children[1]?.textContent?.trim() })),
+      const at = [await col(page, 'Portal'), await col(page, 'Status')] as const;
+      return page.locator('table tbody tr').evaluateAll((rows, [portal, status]) =>
+        rows.map((r) => ({ slug: r.children[portal]?.textContent?.trim().replace(/^\//, ''), status: r.children[status]?.textContent?.trim() })), at,
       );
     });
     await test.step('Expect each API tenant exactly once, with the same status', async () => {
@@ -182,9 +215,11 @@ test.describe('A2 Tenant list', () => {
     await test.step('Open /tenants', () => page.goto('/tenants'));
     await test.step(`Expect each /{slug} link to point at ${env.portalUrl}/{slug}`, async () => {
       for (const { tenant } of api) {
-        await expect.soft(row(page, tenant.slug).getByRole('link', { name: `/${tenant.slug}`, exact: true })).toHaveAttribute('href', `${env.portalUrl}/${tenant.slug}`);
+        await expect.soft(portalLink(page, tenant.slug)).toHaveAttribute('href', `${env.portalUrl}/${tenant.slug}`);
+        await expect.soft(portalLink(page, tenant.slug)).toHaveText(`/${tenant.slug}`);
       }
-      const target = await page.locator('table tbody tr td:nth-child(3) a').first().getAttribute('target');
+      const first = api[0]!.tenant.slug;
+      const target = await portalLink(page, first).getAttribute('target');
       test.info().annotations.push({ type: 'question', description: `Portal link opens in ${target === '_blank' ? 'a new tab' : `the same tab (target=${target ?? 'none'})`}` });
     });
   });
@@ -198,7 +233,7 @@ test.describe('A2 Tenant list', () => {
       await test.step('Expect each Updated cell to equal updatedAt formatted by the browser (toLocaleString)', async () => {
         for (const { tenant } of api) {
           const local = await page.evaluate((iso) => new Date(iso).toLocaleString(), tenant.updatedAt);
-          await expect.soft(row(page, tenant.slug).locator('td').nth(3), tenant.slug).toHaveText(local);
+          await expect.soft(await cell(page, tenant.slug, 'Updated'), tenant.slug).toHaveText(local);
         }
       });
     });
@@ -214,7 +249,8 @@ test.describe('A2 Tenant list', () => {
     });
     await test.step(`Expect /tenants/${env.testTenant}/edit headed "${t?.tenant.tenantName}"`, async () => {
       await expect(page).toHaveURL(new RegExp(`/tenants/${env.testTenant}/edit$`));
-      await expect(page.getByRole('heading', { level: 1 })).toHaveText(t!.tenant.tenantName);
+      // The live heading also holds the status badge ("Ministry of Educationinactive").
+      await expect(page.getByRole('heading', { level: 1 })).toContainText(t!.tenant.tenantName);
     });
   });
 
@@ -223,7 +259,7 @@ test.describe('A2 Tenant list', () => {
     test.skip(!archived.length, 'no archived tenant on this environment');
     await test.step('Open /tenants', () => page.goto('/tenants'));
     await test.step(`Expect ${archived.length} archived tenant(s) listed with status "archived"`, async () => {
-      for (const { tenant } of archived) await expect.soft(row(page, tenant.slug).locator('td').nth(1)).toHaveText('archived');
+      for (const { tenant } of archived) await expect.soft(await cell(page, tenant.slug, 'Status')).toHaveText('archived');
     });
     test.info().annotations.push({ type: 'question', description: 'A2 says "every tenant on the platform" — confirm archived rows are meant to stay listed.' });
   });
@@ -235,12 +271,12 @@ test.describe('A2 Tenant list', () => {
     for (const { tenant } of legacy) {
       await test.step(`Open /tenants — expect the ${tenant.slug} row ("${tenant.tenantName}")`, async () => {
         await page.goto('/tenants');
-        await expect(row(page, tenant.slug).locator('td').first()).toContainText(tenant.tenantName);
+        await expect(await cell(page, tenant.slug, 'Ministry')).toContainText(tenant.tenantName);
       });
       await test.step(`Press Manage on ${tenant.slug} — expect the edit page headed "${tenant.tenantName}"`, async () => {
         await row(page, tenant.slug).getByRole('link', { name: 'Manage' }).click();
         await expect(page).toHaveURL(new RegExp(`/tenants/${tenant.slug}/edit$`));
-        await expect(page.getByRole('heading', { level: 1 })).toHaveText(tenant.tenantName);
+        await expect(page.getByRole('heading', { level: 1 })).toContainText(tenant.tenantName);
       });
     }
     test.info().annotations.push({

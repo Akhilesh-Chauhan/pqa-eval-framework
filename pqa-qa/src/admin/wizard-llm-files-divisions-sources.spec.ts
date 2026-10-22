@@ -2,18 +2,23 @@ import { writeFileSync } from 'node:fs';
 import type { Locator, Page } from '@playwright/test';
 import { test, expect, blockWrites } from './fixtures.js';
 import type { AdminEnv } from './admin-env.js';
-import { nextButton } from './wizard.js';
+import { BEDROCK_MODELS, DUMMY_BEDROCK, checkCredentials, chooseBedrock, loadModels, mockBedrockModels, nextButton } from './wizard.js';
 import type { WizardData } from './wizard.js';
 import { notMeasured } from '../support/annotations.js';
 
 // Create-tenant wizard steps 3–6 (components.md A3.4–A3.7). Every test aborts all non-GET /api
 // calls (blockWrites) before opening the wizard, so nothing here can create a tenant. The
-// "capture" tests read the body of the aborted POST /api/tenants. The LLM key is always a dummy.
+// "capture" tests read the body of the aborted POST /api/tenants. The LLM keys are always dummies;
+// the Bedrock model list is answered in the browser, except SA-WLLM-17, which lets AWS refuse the dummy keys.
 
 type Writes = Awaited<ReturnType<typeof blockWrites>>;
 
-const STEPS = ['Basic Info', 'Branding', 'Assistant & Logos', 'LLM Config', 'File Rules', 'Departments', 'Sources & modules', 'Review & Submit'];
+const STEPS = ['Basic Info', 'Branding', 'Assistant & Logos', 'LLM Config', 'File Rules', 'Departments', 'Sources', 'Review & Submit'];
 const LLM = { apiKey: 'dummy-key', baseUrl: 'https://negd-gpus.in', model: 'qa-chat-model', embeddingModel: 'qa-embed-model' };
+const KEYS_REQUIRED = 'Access key and secret key are required for Bedrock.';
+const MODELS_STALE = 'Check credentials and load models, then choose one.';
+const CREDENTIALS_ERROR = 'Those credentials could not list models in this region. Check the access key, secret key, and region.';
+const AWS_UNREACHABLE = 'Could not reach AWS to list models.';
 const HTTPS_ONLY = 'Must be a public HTTPS URL (no localhost or private IPs).';
 const DIVISION = { name: 'QA Division', short: 'QAD', desc: 'Handles QA questions' };
 
@@ -78,11 +83,20 @@ async function openWizardAt(page: Page, env: AdminEnv, to: number): Promise<Wiza
   return d;
 }
 
-/** Jumps with the step list at the top of the wizard, e.g. "4. LLM Config". */
+/** The step list's button for step `n`, e.g. "Step 4: LLM Config, completed" (its state follows the comma). */
+const stepButton = (page: Page, n: number) =>
+  page.getByRole('button', { name: new RegExp(`^Step ${n + 1}: ${STEPS[n]!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(,|$)`) });
+
+/** Jumps with the step list at the top of the wizard. */
 async function jump(page: Page, n: number): Promise<void> {
-  await page.getByRole('button', { name: `${n + 1}. ${STEPS[n]}`, exact: true }).click();
+  await stepButton(page, n).click();
   await onStep(page, n);
 }
+
+// The Bedrock model pickers have no id or label on the live build (A3.4 names them #model / #embeddingModel):
+// they are the two selects of the "Models" group.
+const chatPicker = (page: Page) => page.getByRole('group', { name: 'Models' }).getByRole('combobox').nth(0);
+const embeddingPicker = (page: Page) => page.getByRole('group', { name: 'Models' }).getByRole('combobox').nth(1);
 
 /** `fill` refuses letters in a number input, so type those the way a user would. */
 async function typeInto(input: Locator, value: string): Promise<void> {
@@ -114,8 +128,11 @@ const reviewRow = (page: Page, label: string, value: string) =>
   expect(page.getByRole('main').first()).toContainText(new RegExp(`${label}\\s*${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
 
 interface CreateBody {
-  tenant: { assistant: { fileSupportType: { mimeTypes: string[]; questionListMimeTypes: string[] } } };
+  tenant: { assistant: { fileSupportType: { mimeTypes: string[]; questionListMimeTypes: string[] }; llm?: Record<string, unknown> } };
   departments: Array<{ designations?: string[]; status?: string }>;
+  llmApiKey?: string;
+  bedrockAccessKeyId?: string;
+  bedrockSecretAccessKey?: string;
 }
 
 async function captureCreate(page: Page, writes: Writes): Promise<CreateBody> {
@@ -128,12 +145,12 @@ async function captureCreate(page: Page, writes: Writes): Promise<CreateBody> {
 }
 
 async function addDivision(page: Page, v: { name?: string; short?: string; desc?: string; designations?: string }): Promise<void> {
-  await page.getByRole('button', { name: '+ Add division' }).click();
+  await page.getByRole('button', { name: /^\+? ?Add division$/ }).click();
   const last = (name: string) => page.getByRole('textbox', { name, exact: true }).last();
   if (v.name) await last('Division name').fill(v.name);
   if (v.short) await last('Short name').fill(v.short);
-  if (v.designations) await last('Designations, comma-separated').fill(v.designations);
-  if (v.desc) await last('What this division handles').fill(v.desc);
+  if (v.designations) await last('Designations').fill(v.designations);
+  if (v.desc) await last('Description').fill(v.desc);
 }
 
 async function addSource(page: Page, url: string): Promise<void> {
@@ -163,14 +180,16 @@ test.describe('A3.4 Step 3 — LLM Config', () => {
     await nothingSent(writes);
   });
 
-  test('SA-WLLM-02 switching to Bedrock shows the region filled with ap-south-1 and hides base URL and API key', async ({ page, env }) => {
+  test('SA-WLLM-02 switching to Bedrock shows both keys, region ap-south-1 and Check credentials, and hides base URL and API key', async ({ page, env }) => {
     const writes = await blockWrites(page);
     await openWizardAt(page, env, 3);
-    await test.step('Choose provider "AWS Bedrock (legacy)"', async () => {
-      await page.locator('#provider').selectOption({ label: 'AWS Bedrock (legacy)' });
+    await test.step('Choose provider Bedrock', async () => {
+      await page.locator('#provider').selectOption('bedrock');
     });
-    await test.step('Expect region "ap-south-1"; base URL and API key fields hidden', async () => {
+    await test.step('Expect access and secret key password fields, region "ap-south-1", "Check credentials and load models"; base URL and API key hidden', async () => {
+      for (const id of ['#bedrockAccessKeyId', '#bedrockSecretAccessKey']) await expect(page.locator(id)).toHaveAttribute('type', 'password');
       await expect(page.locator('#region')).toHaveValue('ap-south-1');
+      await expect(checkCredentials(page)).toBeVisible();
       await expect(page.locator('#baseUrl')).toBeHidden();
       await expect(page.locator('#llmApiKey')).toBeHidden();
     });
@@ -180,17 +199,17 @@ test.describe('A3.4 Step 3 — LLM Config', () => {
   test('SA-WLLM-03 switching back to on-prem refills an empty base URL and clears the region', async ({ page, env }) => {
     const writes = await blockWrites(page);
     await openWizardAt(page, env, 3);
-    await test.step('Clear the base URL; choose "AWS Bedrock (legacy)"; set region "eu-west-1"', async () => {
+    await test.step('Clear the base URL; choose Bedrock; set region "eu-west-1"', async () => {
       await page.locator('#baseUrl').fill('');
-      await page.locator('#provider').selectOption({ label: 'AWS Bedrock (legacy)' });
+      await page.locator('#provider').selectOption('bedrock');
       await page.locator('#region').fill('eu-west-1');
     });
-    await test.step('Choose "On Prem (NeGD GPUs)" — expect base URL https://negd-gpus.in', async () => {
-      await page.locator('#provider').selectOption({ label: 'On Prem (NeGD GPUs)' });
+    await test.step('Choose on-prem — expect base URL https://negd-gpus.in', async () => {
+      await page.locator('#provider').selectOption('on_prem');
       await expect(page.locator('#baseUrl')).toHaveValue('https://negd-gpus.in');
     });
     await test.step('Choose Bedrock again — expect region "ap-south-1", not "eu-west-1" (it was cleared)', async () => {
-      await page.locator('#provider').selectOption({ label: 'AWS Bedrock (legacy)' });
+      await page.locator('#provider').selectOption('bedrock');
       await expect(page.locator('#region')).toHaveValue('ap-south-1');
     });
     await nothingSent(writes);
@@ -199,10 +218,8 @@ test.describe('A3.4 Step 3 — LLM Config', () => {
   test('SA-WLLM-04 Bedrock with no region is refused', async ({ page, env }) => {
     const writes = await blockWrites(page);
     await openWizardAt(page, env, 3);
-    await test.step(`Choose "AWS Bedrock (legacy)", chat model "${LLM.model}", embedding model "${LLM.embeddingModel}", clear the region; Next`, async () => {
-      await page.locator('#provider').selectOption({ label: 'AWS Bedrock (legacy)' });
-      await page.locator('#model').fill(LLM.model);
-      await page.locator('#embeddingModel').fill(LLM.embeddingModel);
+    await test.step('Choose Bedrock, clear the region; Next', async () => {
+      await page.locator('#provider').selectOption('bedrock');
       await page.locator('#region').fill('');
       await nextButton(page).click();
     });
@@ -216,12 +233,12 @@ test.describe('A3.4 Step 3 — LLM Config', () => {
   test('SA-WLLM-05 Create without an API key routes to step 3 and sends nothing', async ({ page, env }) => {
     const writes = await blockWrites(page);
     await openWizardAt(page, env, 7);
-    await test.step('Go back with the step list "4. LLM Config" and clear the API key', async () => {
+    await test.step('Go back with the step list "Step 4: LLM Config" and clear the API key', async () => {
       await jump(page, 3);
       await page.locator('#llmApiKey').fill('');
     });
-    await test.step('Return with the step list "8. Review & Submit" and press Create tenant', async () => {
-      await page.getByRole('button', { name: `8. ${STEPS[7]}`, exact: true }).click();
+    await test.step('Return with the step list "Step 8: Review & Submit" and press Create tenant', async () => {
+      await stepButton(page, 7).click();
       const reached = await page.getByRole('heading', { level: 2, name: STEPS[7], exact: true }).waitFor({ timeout: 5_000 }).then(() => true, () => false);
       if (!reached) {
         const at = await page.getByRole('heading', { level: 2 }).first().textContent();
@@ -260,16 +277,25 @@ test.describe('A3.4 Step 3 — LLM Config', () => {
     await nothingSent(writes);
   });
 
-  test('SA-WLLM-07 Bedrock advances without an API key', async ({ page, env }) => {
+  test('SA-WLLM-07 Bedrock passes without an API key once its keys are checked and the models picked', async ({ page, env }) => {
     const writes = await blockWrites(page);
+    await mockBedrockModels(page, BEDROCK_MODELS);
     await openWizardAt(page, env, 3);
-    await test.step(`Choose "AWS Bedrock (legacy)" (region ap-south-1), chat model "${LLM.model}", embedding model "${LLM.embeddingModel}"; Next`, async () => {
-      await page.locator('#provider').selectOption({ label: 'AWS Bedrock (legacy)' });
-      await page.locator('#model').fill(LLM.model);
-      await page.locator('#embeddingModel').fill(LLM.embeddingModel);
-      await nextButton(page).click();
+    await test.step(`Choose Bedrock with the dummy keys; press Check credentials and load models (answered in the browser: ${BEDROCK_MODELS.chat.join(', ')} / ${BEDROCK_MODELS.embedding.join(', ')})`, async () => {
+      await chooseBedrock(page);
+      await checkCredentials(page).click();
     });
-    await test.step('Expect step 4 "File Rules"', async () => onStep(page, 4));
+    await test.step('Expect the dropdowns to offer the answered models and no API key field', async () => {
+      await expect(chatPicker(page).locator('option')).toContainText(BEDROCK_MODELS.chat);
+      await expect(embeddingPicker(page).locator('option')).toContainText(BEDROCK_MODELS.embedding);
+      await expect(page.locator('#llmApiKey')).toBeHidden();
+    });
+    await test.step(`Pick ${BEDROCK_MODELS.chat[0]} and ${BEDROCK_MODELS.embedding[0]}; Next — expect step 4 "File Rules"`, async () => {
+      await chatPicker(page).selectOption(BEDROCK_MODELS.chat[0]!);
+      await embeddingPicker(page).selectOption(BEDROCK_MODELS.embedding[0]!);
+      await nextButton(page).click();
+      await onStep(page, 4);
+    });
     await nothingSent(writes);
   });
 
@@ -357,6 +383,142 @@ test.describe('A3.4 Step 3 — LLM Config', () => {
     });
     await nothingSent(writes);
   });
+
+  test('SA-WLLM-15 Bedrock needs both keys', async ({ page, env }) => {
+    const writes = await blockWrites(page);
+    await openWizardAt(page, env, 3);
+    await test.step(`Choose Bedrock, leave both keys blank; Next — expect "${KEYS_REQUIRED}" and still on step 3`, async () => {
+      await page.locator('#provider').selectOption('bedrock');
+      await nextButton(page).click();
+      await expect(message(page, KEYS_REQUIRED).first()).toBeVisible();
+      await onStep(page, 3);
+    });
+    await nothingSent(writes);
+  });
+
+  test('SA-WLLM-16 Bedrock does not pass until the models are loaded', async ({ page, env }) => {
+    const writes = await blockWrites(page);
+    await openWizardAt(page, env, 3);
+    await test.step(`Choose Bedrock with the dummy keys, no Check credentials; Next — expect "${MODELS_STALE}" and still on step 3`, async () => {
+      await chooseBedrock(page);
+      await nextButton(page).click();
+      await expect(message(page, MODELS_STALE).first()).toBeVisible();
+      await onStep(page, 3);
+    });
+    await nothingSent(writes);
+  });
+
+  test('SA-WLLM-17 wrong keys: Check credentials shows the credentials error, loads no model and echoes no key', async ({ page, env }) => {
+    test.setTimeout(90_000); // the check itself may take its full 20 s
+    const writes = await blockWrites(page);
+    await test.step('Let POST /api/llm/bedrock-models reach the server: it only lists models, and AWS refuses the dummy keys', async () => {
+      await page.route('**/api/llm/bedrock-models', (route) => route.continue());
+    });
+    await openWizardAt(page, env, 3);
+    await test.step('Choose Bedrock with the dummy keys; press Check credentials and load models — expect a refusal whose body holds neither key', async () => {
+      await chooseBedrock(page);
+      const answered = page.waitForResponse((r) => r.url().endsWith('/api/llm/bedrock-models'), { timeout: 30_000 });
+      await checkCredentials(page).click();
+      const res = await answered;
+      const body = await res.text();
+      expect(res.status(), body).toBeGreaterThanOrEqual(400);
+      for (const key of Object.values(DUMMY_BEDROCK)) expect(body, 'a key was echoed back').not.toContain(key);
+    });
+    await test.step(`Expect "${CREDENTIALS_ERROR}" (or "${AWS_UNREACHABLE}"), no model in either dropdown and neither key in the page text`, async () => {
+      await expect(message(page, CREDENTIALS_ERROR).or(message(page, AWS_UNREACHABLE)).first()).toBeVisible();
+      for (const [name, picker] of [['chat', chatPicker(page)], ['embedding', embeddingPicker(page)]] as const) {
+        expect(await picker.locator('option').evaluateAll((os) => os.filter((o) => (o as HTMLOptionElement).value).length), `${name} models listed`).toBe(0);
+      }
+      const text = await page.locator('body').innerText();
+      for (const key of Object.values(DUMMY_BEDROCK)) expect(text).not.toContain(key);
+    });
+    await test.step(`Next — expect "${MODELS_STALE}" and still on step 3`, async () => {
+      await nextButton(page).click();
+      await expect(message(page, MODELS_STALE).first()).toBeVisible();
+      await onStep(page, 3);
+    });
+    await nothingSent(writes);
+  });
+
+  test('SA-WLLM-18 editing a key after the check marks the model list stale', async ({ page, env }) => {
+    const writes = await blockWrites(page);
+    await mockBedrockModels(page, BEDROCK_MODELS);
+    await openWizardAt(page, env, 3);
+    await test.step('Choose Bedrock with the dummy keys; Check credentials (answered in the browser); pick a chat and an embedding model', async () => {
+      await chooseBedrock(page);
+      await loadModels(page);
+    });
+    await test.step(`Change the access key; Next — expect "${MODELS_STALE}" and still on step 3`, async () => {
+      await page.locator('#bedrockAccessKeyId').fill(`${DUMMY_BEDROCK.accessKeyId}-2`);
+      await nextButton(page).click();
+      await expect(message(page, MODELS_STALE).first()).toBeVisible();
+      await onStep(page, 3);
+    });
+    await nothingSent(writes);
+  });
+
+  test('SA-WLLM-19 a fresh check that lacks the picked chat model clears the pick', async ({ page, env }) => {
+    const writes = await blockWrites(page);
+    const [chatA, chatB] = BEDROCK_MODELS.chat as [string, string];
+    await mockBedrockModels(page, BEDROCK_MODELS, { chat: [chatA], embedding: BEDROCK_MODELS.embedding });
+    await openWizardAt(page, env, 3);
+    const draft = () => page.evaluate(() => Object.values(sessionStorage).join('\n'));
+    await test.step(`Choose Bedrock with the dummy keys; Check credentials; pick ${chatB} and ${BEDROCK_MODELS.embedding[0]}`, async () => {
+      await chooseBedrock(page);
+      await loadModels(page, chatB);
+    });
+    await test.step(`Change the secret key; Check credentials again (answered without ${chatB}) — expect ${chatB} gone from the draft and the embedding pick kept`, async () => {
+      await page.locator('#bedrockSecretAccessKey').fill(`${DUMMY_BEDROCK.secretAccessKey}-2`);
+      await checkCredentials(page).click();
+      await expect.poll(draft).not.toContain(chatB);
+      await expect(embeddingPicker(page)).toHaveValue(BEDROCK_MODELS.embedding[0]!);
+    });
+    await test.step('Next — expect still on step 3 (no chat model chosen)', async () => {
+      await nextButton(page).click();
+      await onStep(page, 3);
+    });
+    await nothingSent(writes);
+  });
+
+  test('SA-WLLM-20 switching provider discards the typed secrets', async ({ page, env }) => {
+    const writes = await blockWrites(page);
+    await openWizardAt(page, env, 3);
+    await test.step('On-prem: API key "dummy-key"; switch to Bedrock and back — expect the API key blank', async () => {
+      await page.locator('#llmApiKey').fill(LLM.apiKey);
+      await page.locator('#provider').selectOption('bedrock');
+      await page.locator('#provider').selectOption('on_prem');
+      await expect(page.locator('#llmApiKey')).toHaveValue('');
+    });
+    await test.step('Bedrock: type the dummy keys; switch to on-prem and back — expect both key fields blank', async () => {
+      await chooseBedrock(page);
+      await page.locator('#provider').selectOption('on_prem');
+      await page.locator('#provider').selectOption('bedrock');
+      for (const id of ['#bedrockAccessKeyId', '#bedrockSecretAccessKey']) await expect(page.locator(id)).toHaveValue('');
+    });
+    await nothingSent(writes);
+  });
+
+  test('SA-WLLM-21 the create body carries the Bedrock keys beside the tenant and only the picked model ids', async ({ page, env }) => {
+    const writes = await blockWrites(page);
+    await mockBedrockModels(page, BEDROCK_MODELS);
+    const d = await openWizardAt(page, env, 3);
+    const [chatA, chatB] = BEDROCK_MODELS.chat as [string, string];
+    await test.step(`Choose Bedrock with the dummy keys; Check credentials (answered in the browser); pick ${chatB}; Next through steps 4–6 to step 7`, async () => {
+      await chooseBedrock(page);
+      await loadModels(page, chatB);
+      await nextButton(page).click();
+      await onStep(page, 4);
+      await walk(page, d, 4, 7);
+    });
+    const body = await captureCreate(page, writes);
+    await test.step(`Expect both keys beside "tenant" and no llmApiKey; tenant.assistant.llm = bedrock, ap-south-1, ${chatB}, ${BEDROCK_MODELS.embedding[0]}; neither key nor ${chatA} inside "tenant"`, async () => {
+      expect(body).toMatchObject({ bedrockAccessKeyId: DUMMY_BEDROCK.accessKeyId, bedrockSecretAccessKey: DUMMY_BEDROCK.secretAccessKey });
+      expect(body.llmApiKey ?? '').toBe('');
+      expect(body.tenant.assistant.llm).toMatchObject({ provider: 'bedrock', region: 'ap-south-1', model: chatB, embeddingModel: BEDROCK_MODELS.embedding[0] });
+      const tenant = JSON.stringify(body.tenant);
+      for (const leaked of [...Object.values(DUMMY_BEDROCK), chatA]) expect(tenant).not.toContain(leaked);
+    });
+  });
 });
 
 const FILE_TYPES = ['PDF', 'Word (.doc)', 'Word (.docx)', 'Excel (.xls)', 'Excel (.xlsx)', 'PowerPoint (.ppt)', 'PowerPoint (.pptx)', 'Text (.txt)', 'CSV', 'PNG', 'JPEG'];
@@ -406,34 +568,30 @@ test.describe('A3.5 Step 4 — File Rules', () => {
     await nothingSent(writes);
   });
 
-  test('SA-WFIL-05 sizes -1, blank and abc are each refused', async ({ page, env }) => {
+  test('SA-WFIL-05 sizes -1, blank and abc are each refused; a cleared field stays blank', async ({ page, env }) => {
     const writes = await blockWrites(page);
     await openWizardAt(page, env, 4);
+    await test.step('Clear Max upload size and leave the field — expect it to stay blank, not snap back to 1', async () => {
+      await page.locator('#filesizeMb').fill('');
+      await page.locator('#filesizeMb').blur();
+      await expect(page.locator('#filesizeMb')).toHaveValue('');
+    });
     await expectEachRejected(page, '#filesizeMb', ['-1', '', 'abc'], SIZE_ERROR, 4, '10');
     await nothingSent(writes);
   });
 
-  test('SA-WFIL-06 a size of 1 MB is accepted; 0.5 is recorded', async ({ page, env }) => {
+  test('SA-WFIL-06 sizes of 1 and 0.5 MB are accepted: there is no 1 MB floor', async ({ page, env }) => {
     const writes = await blockWrites(page);
     await openWizardAt(page, env, 4);
-    await test.step('Max upload size "1"; Next — expect step 5', async () => {
-      await page.locator('#filesizeMb').fill('1');
-      await nextButton(page).click();
-      await onStep(page, 5);
-    });
-    await test.step('Back; Max upload size "0.5"; Next — record whether it is accepted (and as what) or rejected', async () => {
-      await back(page);
-      await page.locator('#filesizeMb').fill('0.5');
-      await nextButton(page).click();
-      const rejected = message(page, SIZE_ERROR);
-      await expect(rejected.or(page.getByRole('heading', { level: 2, name: STEPS[5], exact: true }))).toBeVisible();
-      let outcome = `rejected with "${SIZE_ERROR}"`;
-      if (!(await rejected.isVisible())) {
+    for (const size of ['1', '0.5']) {
+      await test.step(`Max upload size "${size}"; Next — expect step 5; Back — expect the field to show "${size}"`, async () => {
+        await page.locator('#filesizeMb').fill(size);
+        await nextButton(page).click();
+        await onStep(page, 5);
         await back(page);
-        outcome = `accepted; step 4 then shows "${await page.locator('#filesizeMb').inputValue()}"`;
-      }
-      test.info().annotations.push({ type: 'question', description: `Spec mentions a 1 MB floor. "0.5" MB was ${outcome}.` });
-    });
+        await expect(page.locator('#filesizeMb')).toHaveValue(size);
+      });
+    }
     await nothingSent(writes);
   });
 
@@ -490,7 +648,8 @@ test.describe('A3.6 Step 5 — Departments', () => {
     const writes = await blockWrites(page);
     await openWizardAt(page, env, 5);
     await test.step('Expect the note that departments are not required but routing needs at least one', async () => {
-      await expect(page.getByText('No departments yet — not required to create the tenant, but the routing workflow needs at least one to be useful.')).toBeVisible();
+      await expect(page.getByText('No divisions yet', { exact: true })).toBeVisible();
+      await expect(page.getByText('Not required to create the tenant, but the routing workflow needs at least one to be useful.')).toBeVisible();
     });
     await test.step('Press Next with no rows — expect step 6', async () => {
       await nextButton(page).click();
@@ -503,8 +662,8 @@ test.describe('A3.6 Step 5 — Departments', () => {
     const writes = await blockWrites(page);
     await openWizardAt(page, env, 5);
     await test.step('Press + Add division', async () => addDivision(page, {}));
-    await test.step('Expect Division name, Short name, Active (ticked), Designations, What this division handles', async () => {
-      for (const name of ['Division name', 'Short name', 'Designations, comma-separated', 'What this division handles']) {
+    await test.step('Expect Division name, Short name, Active (ticked), Designations, Description', async () => {
+      for (const name of ['Division name', 'Short name', 'Designations', 'Description']) {
         await expect(page.getByRole('textbox', { name, exact: true })).toBeVisible();
       }
       await expect(page.getByRole('checkbox', { name: 'Active', exact: true })).toBeChecked();
@@ -636,8 +795,8 @@ test.describe('A3.6 Step 5 — Departments', () => {
       await expect(message(page, 'Required.').first()).toBeVisible();
       await onStep(page, 5);
     });
-    await test.step('Press Remove on the blank (second) row; Next — expect step 6', async () => {
-      await page.getByRole('button', { name: 'Remove', exact: true }).nth(1).click();
+    await test.step('Press Remove on the blank (second) row ("Remove Division 2"); Next — expect step 6', async () => {
+      await page.getByRole('button', { name: /^Remove / }).nth(1).click();
       await nextButton(page).click();
       await onStep(page, 6);
     });
@@ -653,7 +812,7 @@ const MODULES = [
 ];
 const yamlStatus = (page: Page) => page.getByText(/^(Selected: |Current: |No file attached\.)/);
 
-test.describe('A3.7 Step 6 — Sources & modules', () => {
+test.describe('A3.7 Step 6 — Sources', () => {
   test('SA-WSRC-01 an HTTP source is refused', async ({ page, env }) => {
     const writes = await blockWrites(page);
     await openWizardAt(page, env, 6);
@@ -811,12 +970,10 @@ test.describe('A3.7 Step 6 — Sources & modules', () => {
   test('SA-WSRC-13 eighteen portal modules, all ticked', async ({ page, env }) => {
     const writes = await blockWrites(page);
     await openWizardAt(page, env, 6);
-    await test.step(`Expect exactly 18 ticked checkboxes, in order: ${MODULES.join(' · ')}`, async () => {
+    // Two columns; the docs give no order, so only the set of names is checked.
+    await test.step(`Expect exactly 18 checkboxes, each ticked: ${MODULES.join(' · ')}`, async () => {
       await expect(page.getByRole('checkbox')).toHaveCount(MODULES.length);
-      for (const [i, label] of MODULES.entries()) {
-        await expect(page.getByRole('checkbox').nth(i)).toHaveAccessibleName(label);
-        await expect(page.getByRole('checkbox').nth(i)).toBeChecked();
-      }
+      for (const label of MODULES) await expect(page.getByRole('checkbox', { name: label, exact: true })).toBeChecked();
     });
     await nothingSent(writes);
   });

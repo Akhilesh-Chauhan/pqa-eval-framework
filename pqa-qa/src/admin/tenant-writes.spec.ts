@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import type { Page, Response, TestInfo } from '@playwright/test';
+import { request } from '@playwright/test';
+import type { Locator, Page, Response, TestInfo } from '@playwright/test';
 import { test, expect, requireWrites, blockWrites } from './fixtures.js';
 import { loadAdminEnv } from './admin-env.js';
 import type { AdminEnv } from './admin-env.js';
@@ -9,7 +10,8 @@ import { DIVISIONS, LOGOS } from './tenant-profile.js';
 // The Auto-W cases that edit a tenant, on ONE disposable tenant D created here through the wizard.
 // D's slug is derived from PQA_RUN_ID, so a worker restart after a failure finds the same tenant.
 // Each edit test sets the state it needs itself; nothing is restored (D is archived at the end).
-// Then the ministry-exclusivity writes (SA-MIN-03, SA-MIN-05), and clean-up as the last test.
+// SA-WSRC-19 creates and archives its own Platform-only portal. Then the ministry-exclusivity writes
+// (SA-MIN-03, SA-MIN-05), and clean-up as the last test.
 
 type Status = 'active' | 'inactive' | 'suspended' | 'archived';
 const LABEL: Record<Exclude<Status, 'archived'>, string> = { active: 'Active', inactive: 'Inactive', suspended: 'Suspended' };
@@ -21,6 +23,7 @@ const slug = `qw${tag}`; // D
 const slug2 = `qx${tag}`; // D2 — a second portal for D's ministry (SA-MIN-05)
 const raceA = `qr${hex('writes:race-a')}`; // SA-MIN-03
 const raceB = `qr${hex('writes:race-b')}`;
+const slugP = `qp${hex('writes:platform-only')}`; // SA-WSRC-19 — a Platform only portal
 const editUrl = `/tenants/${slug}/edit`;
 const adminEmailUpper = env.tenantAdmin?.email.replace(/^[^@]+/, (local) => local.toUpperCase()) ?? '';
 
@@ -54,15 +57,43 @@ async function apiStatus(page: Page, s: string): Promise<Status> {
   return (await getTenant(page, s)).tenant.status;
 }
 
+// A4.1a on the live build (22 Oct): no Portal status dropdown — the Status card shows the current status as text and
+// one button per move. Seen: inactive → "Activate portal" · "Suspend portal"; active → "Set portal inactive" ·
+// "Suspend portal"; suspended → "Reactivate portal" · "Archive ministry" (no move to Inactive); archived → "Unarchive ministry".
+const statusCard = (page: Page) => page.getByRole('region', { name: 'Status' });
+const MOVE: Record<Exclude<Status, 'archived'>, RegExp> = {
+  active: /^(Activate|Reactivate) portal$/,
+  suspended: /^Suspend portal$/,
+  inactive: /^Set portal inactive$/,
+};
+/** The status word the card shows. Read it with textContent: innerText applies the badge's CSS capitalisation. */
+const shownStatus = (page: Page) => statusCard(page).getByText(/^(active|inactive|suspended)$/).first();
+const shownNow = async (page: Page) => ((await shownStatus(page).textContent()) ?? '').trim().toLowerCase();
+
+/** Presses `button`, then accepts its confirmation: a browser confirm, or an in-page dialog (never the UX4G widget,
+ * which is a dialog on every page) — the live build moved several confirmations into the page. */
+async function pressAndConfirm(page: Page, button: Locator): Promise<void> {
+  page.once('dialog', (d) => void d.accept());
+  await button.click();
+  const modal = page.getByRole('dialog').or(page.getByRole('alertdialog')).filter({ hasNotText: 'Accessibility Options' }).first();
+  if (await modal.waitFor({ timeout: 2_000 }).then(() => true, () => false)) await modal.getByRole('button', { name: /^(?!(Cancel|Close)$).+/ }).last().click();
+}
+
 async function setStatus(page: Page, s: string, to: Exclude<Status, 'archived'>): Promise<void> {
-  await test.step(`Open /tenants/${s}/edit and choose Portal status "${LABEL[to]}"`, async () => {
+  await test.step(`Open /tenants/${s}/edit › Status and move it to "${LABEL[to]}"`, async () => {
     await page.goto(`/tenants/${s}/edit`);
-    await expect(page.locator('#status')).toBeVisible();
-    if ((await page.locator('#status').inputValue()) === to) return; // already there: nothing to save
-    const saved = page.waitForResponse((r) => r.url().endsWith(`/api/tenants/${s}/status`) && r.request().method() === 'PATCH');
-    await page.locator('#status').selectOption(to);
-    expect((await saved).status()).toBe(200);
-    await expect(page.getByText('Portal status updated.')).toBeVisible();
+    await menuEntry(page, 'Status').click();
+    await expect(shownStatus(page)).toBeVisible();
+    const now = await shownNow(page);
+    if (now === to) return; // already there: nothing to save
+    const path: Array<Exclude<Status, 'archived'>> = now === 'suspended' && to === 'inactive' ? ['active', 'inactive'] : [to];
+    if (path.length > 1) test.info().annotations.push({ type: 'deviation', description: 'A4.1a lets a suspended portal go straight to Inactive; the live card offers only Reactivate and Archive, so it was reactivated first' });
+    for (const step of path) {
+      const saved = page.waitForResponse((r) => r.url().endsWith(`/api/tenants/${s}/status`) && r.request().method() === 'PATCH');
+      await pressAndConfirm(page, statusCard(page).getByRole('button', { name: MOVE[step] }));
+      expect((await saved).status()).toBe(200);
+      await expect(page.getByText('Portal status updated.').first()).toBeVisible();
+    }
   });
   await test.step(`Expect the API to report ${to}`, async () => {
     expect(await apiStatus(page, s)).toBe(to);
@@ -165,11 +196,21 @@ const READY: Record<Tab, (p: Page) => ReturnType<Page['locator']>> = {
   Roles: (p) => p.getByRole('textbox', { name: 'New role name' }),
 };
 
-async function openEdit(page: Page, tab: Tab = 'Configuration'): Promise<void> {
-  await test.step(`Open ${editUrl} — ${tab} tab`, async () => {
+/** A4.1: the Configuration tab shows one section at a time behind a settings menu. Whole words, case-sensitive,
+ * so the Configuration tab's own name ("… branding, LLM, files") never matches. */
+function menuEntry(page: Page, name: string) {
+  const re = new RegExp(`(^|\\W)${name}(\\W|$)`);
+  const main = page.getByRole('main');
+  return main.getByRole('link', { name: re }).or(main.getByRole('button', { name: re })).or(main.getByRole('tab', { name: re })).first();
+}
+
+/** Opens a tab; on Configuration, also a section (the address keeps it, so a reload stays there). */
+async function openEdit(page: Page, tab: Tab = 'Configuration', section?: string): Promise<void> {
+  await test.step(`Open ${editUrl} — ${tab} tab${section ? ` › ${section}` : ''}`, async () => {
     await page.goto(editUrl);
-    if (tab !== 'Configuration') await page.getByRole('button', { name: new RegExp(`^${tab}\\b`) }).click();
+    if (tab !== 'Configuration') await page.getByRole('tablist', { name: 'Tenant sections' }).getByRole('tab', { name: tab, exact: true }).click();
     await expect(READY[tab](page)).toBeVisible();
+    if (section) await menuEntry(page, section).click();
   });
 }
 
@@ -182,15 +223,24 @@ async function saveConfig(page: Page) {
   return res;
 }
 
-/** The body the edit page sends on Save configuration, captured and aborted: nothing is written. */
+/** Sets every `key` property in `o`, at any depth, to `value`. */
+function setKey(o: unknown, key: string, value: unknown): void {
+  if (o && typeof o === 'object') for (const [k, v] of Object.entries(o)) (k === key ? ((o as Record<string, unknown>)[k] = value) : setKey(v, key, value));
+}
+
+/** The body the edit page sends on Save configuration, captured and aborted: nothing is written. Save is disabled until
+ * something changes (live build, 22 Oct), so it toggles the accessibility bar and puts the stored value back in the body. */
 async function captureConfigBody(page: Page): Promise<any> {
-  await openEdit(page);
-  return test.step('Press Save configuration with the PATCH intercepted and aborted — capture its body (nothing written)', async () => {
+  const bar: boolean = (await getTenant(page)).tenant.features?.accessibilityBar ?? true;
+  await openEdit(page, 'Configuration', 'Basic Info');
+  return test.step('Toggle Accessibility bar; press Save configuration with the PATCH intercepted and aborted — capture its body with the stored value put back (nothing written)', async () => {
+    await page.getByRole('switch', { name: 'Accessibility bar' }).click();
     await page.route(`**/api/tenants/${slug}`, (r) => (r.request().method() === 'PATCH' ? r.abort() : r.continue()));
     const req = page.waitForRequest((r) => r.method() === 'PATCH' && r.url().endsWith(`/api/tenants/${slug}`));
     await page.getByRole('button', { name: 'Save configuration' }).click();
     const body = (await req).postDataJSON();
     await page.unroute(`**/api/tenants/${slug}`);
+    setKey(body, 'accessibilityBar', bar);
     return body;
   });
 }
@@ -220,14 +270,13 @@ async function lastKey(page: Page, prefix: string): Promise<string> {
   return (await page.locator(`[id^="${prefix}"]`).last().getAttribute('id'))!.slice(prefix.length);
 }
 
-/** The editor row holding input #id: its nearest ancestor with a button or checkbox. */
-const rowOf = (page: Page, id: string) =>
-  page.locator(`[id="${id}"]`).locator('xpath=ancestor::div[.//button or .//input[@type="checkbox"]][1]');
+/** The editor row holding input #id: its nearest table row (People) or list item (Divisions) — the live layout, 22 Oct. */
+const rowOf = (page: Page, id: string) => page.locator(`[id="${id}"]`).locator('xpath=(ancestor::tr | ancestor::li)[last()]');
 
 // People
 
 async function addPerson(page: Page, name: string, email: string, role?: 'Ministry admin' | 'User'): Promise<string> {
-  await page.getByRole('button', { name: '+ Add person' }).click();
+  await page.getByRole('button', { name: /^\+? ?Add person$/ }).click();
   const key = await lastKey(page, 'name-');
   await page.locator(`[id="name-${key}"]`).fill(name);
   await page.locator(`[id="email-${key}"]`).fill(email);
@@ -237,7 +286,8 @@ async function addPerson(page: Page, name: string, email: string, role?: 'Minist
 
 async function savePeople(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Save people' }).click();
-  await expect(page.getByText('People saved to the ministry portal schema.')).toBeVisible({ timeout: 30_000 });
+  // Live copy (22 Oct): "People saved to the ministry portal…" (A4.2: "…portal schema."), inline and in a toast.
+  await expect(page.getByText(/^People saved to the ministry portal/).first()).toBeVisible({ timeout: 30_000 });
 }
 
 async function personState(page: Page, email: string): Promise<'active' | 'inactive' | 'absent'> {
@@ -246,21 +296,23 @@ async function personState(page: Page, email: string): Promise<'active' | 'inact
   return (await rowOf(page, `email-${key}`).getByRole('checkbox', { name: 'Active' }).isChecked()) ? 'active' : 'inactive';
 }
 
-async function deactivate(page: Page, email: string): Promise<void> {
-  await test.step(`Press Deactivate on ${email}; accept "Deactivate ${email}? They will not be able to sign in."`, async () => {
+/** Deactivates `email` on People; returns whether the server accepted it (asserted unless `mustSucceed` is false). */
+async function deactivate(page: Page, email: string, mustSucceed = true): Promise<boolean> {
+  return test.step(`Press Deactivate on ${email}; accept "Deactivate ${email}? They will not be able to sign in."`, async () => {
     const key = await keyOf(page, 'email-', email);
     expect(key, `${email} is listed on People`).toBeDefined();
     const done = page.waitForResponse((r) => r.request().method() !== 'GET' && r.url().includes(`/api/tenants/${slug}/users/`));
-    page.once('dialog', (d) => d.accept());
-    await rowOf(page, `email-${key}`).getByRole('button', { name: 'Deactivate' }).click();
-    expect((await done).ok(), 'deactivate request').toBe(true);
+    await pressAndConfirm(page, rowOf(page, `email-${key}`).getByRole('button', { name: /^Deactivate\b/ }));
+    const ok = (await done).ok();
+    if (mustSucceed) expect(ok, 'deactivate request').toBe(true);
+    return ok;
   });
 }
 
 // Divisions
 
 async function addDivision(page: Page, d: { name: string; code?: string; desc?: string; desig?: string }): Promise<string> {
-  await page.getByRole('button', { name: '+ Add division' }).click();
+  await page.getByRole('button', { name: /^\+? ?Add division$/ }).click();
   const key = await lastKey(page, 'dname-');
   await page.locator(`[id="dname-${key}"]`).fill(d.name);
   if (d.code) await page.locator(`[id="dcode-${key}"]`).fill(d.code);
@@ -269,9 +321,14 @@ async function addDivision(page: Page, d: { name: string; code?: string; desc?: 
   return key;
 }
 
+/** A4.1: "Configuration saved." after a save; the live build (22 Oct) toasts "Configuration saved" — matched either way. */
+const configSaved = (page: Page) => page.getByText(/^Configuration saved\.?$/).first();
+/** A4.3: "Divisions saved to the ministry portal schema."; the live toast (22 Oct) drops "schema" — matched either way. */
+const divisionsSaved = (page: Page) => page.getByText(/^Divisions saved to the ministry portal( schema)?\.?$/).first();
+
 async function saveDivisions(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Save divisions' }).click();
-  await expect(page.getByText('Divisions saved to the ministry portal schema.')).toBeVisible({ timeout: 30_000 });
+  await expect(divisionsSaved(page)).toBeVisible({ timeout: 30_000 });
 }
 
 /** D has at least one saved division (the wizard's, normally); creates one by API if not. */
@@ -311,7 +368,7 @@ async function createRole(page: Page, name: string, perms: string[] = []): Promi
     if (!(await roleButton(page, name).count())) {
       const created = page.waitForResponse((r) => r.request().method() === 'POST' && /\/roles$/.test(new URL(r.url()).pathname));
       await page.getByRole('textbox', { name: 'New role name' }).fill(name);
-      await page.getByRole('button', { name: 'Create', exact: true }).click();
+      await page.getByRole('button', { name: /^Create( role)?$/ }).click();
       expect((await created).ok(), 'POST …/roles').toBe(true);
     }
     await selectRole(page, name);
@@ -357,15 +414,16 @@ test.describe('Writes on a disposable tenant', () => {
     await test.step(`Back twice to step 5; + Add a fifth division: "${DIV.name}", short name ${DIV.short}, designations "${DIV.desig}", description "${DIV.desc}"; Next`, async () => {
       await page.getByRole('button', { name: 'Back', exact: true }).click();
       await page.getByRole('button', { name: 'Back', exact: true }).click();
-      await page.getByRole('button', { name: '+ Add division' }).click();
+      await page.getByRole('button', { name: /^\+? ?Add division$/ }).click();
       await page.getByRole('textbox', { name: 'Division name' }).last().fill(DIV.name);
       await page.getByRole('textbox', { name: 'Short name' }).last().fill(DIV.short);
-      await page.getByRole('textbox', { name: 'Designations, comma-separated' }).last().fill(DIV.desig);
-      await page.getByRole('textbox', { name: 'What this division handles' }).last().fill(DIV.desc);
+      await page.getByRole('textbox', { name: /^Designations(, comma-separated)?$/ }).last().fill(DIV.desig);
+      await page.getByRole('textbox', { name: /^(Description|What this division handles)$/ }).last().fill(DIV.desc);
       await nextButton(page).click();
     });
-    await test.step('Step 6: stage qa-openapi.yaml in "OpenAPI YAML file"; Next', async () => {
+    await test.step('Step 6: untick "AI Assistant (Generate)" (SA-WSRC-18: not saved); stage qa-openapi.yaml in "OpenAPI YAML file"; Next', async () => {
       await expect(page.locator('#sourceUrl')).toBeVisible();
+      await page.getByRole('checkbox', { name: 'AI Assistant (Generate)', exact: true }).uncheck();
       await page.getByLabel('OpenAPI YAML file').setInputFiles(file('qa-openapi.yaml', 'application/yaml', YAML));
       await expect(page.getByText('Selected: qa-openapi.yaml')).toBeVisible();
       await nextButton(page).click();
@@ -393,9 +451,14 @@ test.describe('Writes on a disposable tenant', () => {
       await expect.soft(page.getByText(`${ministry} provisioned`)).toBeVisible({ timeout: 30_000 });
       created = { successText: await page.locator('main').innerText(), openapiAttempts };
     });
-    await test.step('Press Back to tenants; then open /tenants/new in the same tab', async () => {
-      await page.getByRole('button', { name: 'Back to tenants' }).click();
-      await expect(page).toHaveURL(/\/tenants$/);
+    await test.step('Press Back to tenants (A3.11); then open /tenants/new in the same tab', async () => {
+      const back = page.getByRole('button', { name: 'Back to tenants' }).or(page.getByRole('link', { name: 'Back to tenants' })).first();
+      // Live (22 Oct): Open portal · Manage tenant · Create another. Kept as the documented expectation, then carry on.
+      await expect.soft(back, 'A3.11: the success view offers "Back to tenants"').toBeVisible({ timeout: 5_000 });
+      if (await back.count()) {
+        await back.click();
+        await expect(page).toHaveURL(/\/tenants$/);
+      } else await page.goto('/tenants');
       await page.goto('/tenants/new');
     });
     await test.step(`Expect a blank wizard (no ministry, empty admin fields) and no draft in session storage mentioning ${slug} or the admin email`, async () => {
@@ -435,7 +498,7 @@ test.describe('Writes on a disposable tenant', () => {
       await page.goto('/tenants');
       const row = page.getByRole('row').filter({ hasText: `/${slug}` });
       await expect(row).toHaveCount(1);
-      await expect(row.getByRole('cell').nth(1)).toHaveText(tenant.status);
+      await expect(row.getByText(tenant.status, { exact: true })).toBeVisible(); // a Select column now comes first (A2.1)
     });
     await test.step(`Open /tenants/new — expect "${tenant.tenantName} (already provisioned)", disabled`, async () => {
       await page.goto('/tenants/new');
@@ -448,7 +511,8 @@ test.describe('Writes on a disposable tenant', () => {
   test('SA-WREV-10 the stored bundle matches the wizard inputs; the caller tenantName is ignored; no key is returned', async ({ page }, testInfo) => {
     await onD(page, testInfo,
       'The POST /api/tenants body was rewritten in flight to tenant.tenantName "QA Fake Name". Inputs: assistant "QA Assistant" / "QA heading" / ' +
-      '"QA subheading" / "QA placeholder"; on-prem LLM from PQA_ADMIN_LLM_*; 10 MB; PDF only; all modules on; Initial status Active.');
+      '"QA subheading" / "QA placeholder"; on-prem LLM from PQA_ADMIN_LLM_*; 10 MB; PDF only; default package (Platform + AI Assistant) with ' +
+      '"AI Assistant (Generate)" unticked on step 6 (not saved — SA-WSRC-18); Initial status Active.');
     const res = await page.request.get(`/api/tenants/${slug}`);
     const text = await res.text();
     const t = JSON.parse(text).data.tenant;
@@ -456,7 +520,7 @@ test.describe('Writes on a disposable tenant', () => {
       expect(t.tenantName).not.toBe('QA Fake Name');
       expect(env.ministries).toContain(t.tenantName);
     });
-    await test.step('Expect slug, status active, assistant strings, LLM provider/model/baseUrl/embedding, 10 MB in bytes, PDF only, all 18 modules, docYear = this year', () => {
+    await test.step('Expect slug, status active, assistant strings, LLM provider/model/baseUrl/embedding, 10 MB in bytes, PDF only, package platform_ai with all 18 modules, docYear = this year', () => {
       expect.soft(t.slug).toBe(slug);
       expect.soft(t.status).toBe('active');
       expect.soft(t.assistant.displayName).toBe('QA Assistant');
@@ -467,6 +531,7 @@ test.describe('Writes on a disposable tenant', () => {
       expect.soft(t.assistant.llm.embeddingModel).toBe(env.llm!.embeddingModel);
       expect.soft(t.assistant.filesize.bytes).toBe(10 * 1024 * 1024);
       expect.soft(t.assistant.fileSupportType.extensions).toEqual(['.pdf']);
+      expect.soft(t.features?.package).toBe('platform_ai');
       expect.soft(Object.values(t.enabledModules ?? {})).toEqual(Array(18).fill(true));
       expect.soft(t.assistant.docYear.current).toBe(new Date().getFullYear());
     });
@@ -504,12 +569,72 @@ test.describe('Writes on a disposable tenant', () => {
     });
   });
 
+  // ---------- Packages and the modules checklist (spec §3.5) ----------
+
+  test('SA-WSRC-18 a module unticked in the wizard is not saved — the package decides', async ({ page }, testInfo) => {
+    await onD(page, testInfo, 'SA-WREV-09 unticked "AI Assistant (Generate)" on step 6 and kept the default package. Step 3 (the assistant available in the portal) needs a portal session and is not automated.');
+    const t = (await getTenant(page)).tenant;
+    await test.step(`GET /api/tenants/${slug} — expect features.package "platform_ai" and enabledModules the package's map: all 18 on, aiAssistant included`, () => {
+      expect.soft(t.features?.package).toBe('platform_ai');
+      expect.soft(t.enabledModules?.aiAssistant, 'aiAssistant').toBe(true);
+      expect(Object.values(t.enabledModules ?? {})).toEqual(Array(18).fill(true));
+    });
+  });
+
+  test('SA-WSRC-19 a Platform-only tenant refuses the assistant area: GET /<slug>/api/ingestion/reviews → 403 package_excluded', async ({ page }, testInfo) => {
+    testInfo.annotations.push({ type: 'note', description: 'Only the portal-BFF half is automated: the sidebar and the deep link ("Not available") need a portal sign-in (OTP).' });
+    const existing = await page.request.get(`/api/tenants/${slugP}`);
+    test.skip(existing.status() === 200 && (await existing.json()).data.tenant.status === 'archived', `${slugP} is already archived — this check already ran in this run`);
+    try {
+      if (existing.status() !== 200) {
+        const ministry = await test.step('Pick the first PQA_ADMIN_TEST_MINISTRIES ministry with no live portal (GET /api/ministries)', async () => {
+          const m = await freeMinistry(page);
+          expect(m, 'every PQA_ADMIN_TEST_MINISTRIES ministry already has a live portal').toBeDefined();
+          return m!;
+        });
+        await fillWizardToReview(page, { ministry, slug: slugP, adminName: env.tenantAdmin!.name, adminEmail: env.tenantAdmin!.email, llm: env.llm!, package: 'Platform only' });
+        const createdRes = page.waitForResponse((r) => r.url().endsWith('/api/tenants') && r.request().method() === 'POST', { timeout: 60_000 });
+        await test.step('Step 7: Initial status "Active" (an unavailable portal would answer before the package check); Create tenant — expect 201', async () => {
+          await page.locator('#finalStatus').selectOption('active');
+          await page.getByRole('button', { name: 'Create tenant' }).click();
+          expect((await createdRes).status()).toBe(201);
+        });
+      }
+      await test.step(`GET /api/tenants/${slugP} — expect features.package "platform"`, async () => {
+        expect.soft((await getTenant(page, slugP)).tenant.features?.package).toBe('platform');
+      });
+      const url = `${env.portalUrl}/${slugP}/api/ingestion/reviews`;
+      await test.step(`Without a portal session, GET ${url} once the portal knows the tenant (5 s config cache) — expect 403 {"reason":"package_excluded"}`, async () => {
+        const anon = await request.newContext(); // no cookies at all: not even a stray root-scoped one
+        try {
+          let res = await anon.get(url, { failOnStatusCode: false });
+          await expect.poll(async () => (res = await anon.get(url, { failOnStatusCode: false })).status(), { timeout: 30_000, intervals: [3_000] }).toBeLessThan(404);
+          const text = await res.text();
+          await testInfo.attach('answer', { body: `${res.status()} ${text.slice(0, 500)}`, contentType: 'text/plain' });
+          if (res.status() === 401) {
+            testInfo.annotations.push({
+              type: 'question',
+              description: `Without a portal session ${url} answered 401: the session check ran before the package check. §3.5 says the package check runs first in the shared gates — is a 401 intended for an unauthenticated caller? With a session it should be 403 package_excluded.`,
+            });
+            return;
+          }
+          expect(res.status()).toBe(403);
+          expect(text).toMatch(/"reason"\s*:\s*"package_excluded"/);
+        } finally {
+          await anon.dispose();
+        }
+      });
+    } finally {
+      await retire(page, slugP);
+    }
+  });
+
   // ---------- Configuration tab ----------
 
   test('SA-ECFG-11 Save configuration shows Saving… then "Configuration saved."; the change survives a reload', async ({ page }, testInfo) => {
     await onD(page, testInfo);
     const value = `QA subheading ECFG-11 ${tag}`;
-    await openEdit(page);
+    await openEdit(page, 'Configuration', 'Assistant & Logos');
     await test.step(`Hold PATCH /api/tenants/${slug} for 1 s so the in-flight state can be seen`, () =>
       page.route(`**/api/tenants/${slug}`, async (r) => {
         if (r.request().method() === 'PATCH') await new Promise((ok) => setTimeout(ok, 1_000));
@@ -522,7 +647,7 @@ test.describe('Writes on a disposable tenant', () => {
     });
     await test.step('Expect the button to read "Saving…", then "Configuration saved."', async () => {
       await expect(page.getByRole('button', { name: 'Saving…' })).toBeVisible();
-      await expect(page.getByText('Configuration saved.')).toBeVisible({ timeout: 15_000 });
+      await expect(configSaved(page)).toBeVisible({ timeout: 15_000 });
     });
     await test.step(`Reload — expect Welcome subheading "${value}"`, async () => {
       await page.reload();
@@ -533,11 +658,11 @@ test.describe('Writes on a disposable tenant', () => {
   test('SA-ECFG-12 a second save works without reloading', async ({ page }, testInfo) => {
     await onD(page, testInfo);
     const [first, second] = [`QA subheading ECFG-12a ${tag}`, `QA subheading ECFG-12b ${tag}`];
-    await openEdit(page);
+    await openEdit(page, 'Configuration', 'Assistant & Logos');
     await test.step(`Set Welcome subheading "${first}"; Save — expect 200 and "Configuration saved."`, async () => {
       await subheading(page).fill(first);
       expect((await saveConfig(page)).status()).toBe(200);
-      await expect(page.getByText('Configuration saved.')).toBeVisible();
+      await expect(configSaved(page)).toBeVisible();
     });
     await test.step(`Without reloading, set "${second}"; Save — expect 200, no "modified elsewhere" conflict`, async () => {
       await subheading(page).fill(second);
@@ -554,8 +679,8 @@ test.describe('Writes on a disposable tenant', () => {
     const [a, b] = [`QA subheading tab A ${tag}`, `QA subheading tab B ${tag}`];
     const pageB = await page.context().newPage();
     await test.step('Open the edit page in two tabs, A and B', async () => {
-      await openEdit(page);
-      await openEdit(pageB);
+      await openEdit(page, 'Configuration', 'Assistant & Logos');
+      await openEdit(pageB, 'Configuration', 'Assistant & Logos');
     });
     await test.step(`Tab A: Welcome subheading "${a}"; Save — expect 200`, async () => {
       await subheading(page).fill(a);
@@ -574,11 +699,33 @@ test.describe('Writes on a disposable tenant', () => {
     await pageB.close();
   });
 
+  test('SA-API-37 an update returns the freshly bumped token: the next PATCH works with it, an older one is refused', async ({ page }, testInfo) => {
+    await onD(page, testInfo);
+    const body = await captureConfigBody(page);
+    const before: string = (await getTenant(page)).tenant.updatedAt;
+    const token = await test.step(`PATCH /api/tenants/${slug} unchanged with expectedUpdatedAt "${before}" — expect 200 and a later updatedAt, equal to GET`, async () => {
+      const res = await sendConfig(page, { ...body, expectedUpdatedAt: before });
+      expect(res.status(), await answer(res)).toBe(200);
+      const got: string = (await res.json()).data?.tenant?.updatedAt;
+      expect(Date.parse(got), `returned updatedAt "${got}"`).toBeGreaterThan(Date.parse(before));
+      expect((await getTenant(page)).tenant.updatedAt).toBe(got);
+      return got;
+    });
+    await test.step('PATCH again with the returned token, no reload — expect 200', async () => {
+      const res = await sendConfig(page, { ...body, expectedUpdatedAt: token });
+      expect(res.status(), await answer(res)).toBe(200);
+    });
+    await test.step(`PATCH with "${token}" again (now stale) — expect 409 CONFLICT`, async () => {
+      expect((await sendConfig(page, { ...body, expectedUpdatedAt: token })).status()).toBe(409);
+    });
+  });
+
   test('SA-ECFG-15 Save configuration never changes status, even when the PATCH body carries one', async ({ page }, testInfo) => {
     await onD(page, testInfo);
     await setStatus(page, slug, 'suspended');
-    await test.step('Reload; change Welcome subheading; press Save configuration — expect 200', async () => {
+    await test.step('Reload; Assistant & Logos: change Welcome subheading; press Save configuration — expect 200', async () => {
       await page.reload();
+      await menuEntry(page, 'Assistant & Logos').click();
       await subheading(page).fill(`QA subheading ECFG-15 ${tag}`);
       expect((await saveConfig(page)).status()).toBe(200);
     });
@@ -599,15 +746,17 @@ test.describe('Writes on a disposable tenant', () => {
   test('SA-ECFG-17 a blank API key on save keeps the stored key', async ({ page }, testInfo) => {
     await onD(page, testInfo);
     await test.step(`GET /api/tenants/${slug} — expect it to report a key is set`, () => expectKeyFlag(page, testInfo));
-    await openEdit(page);
+    await openEdit(page, 'Configuration', 'LLM Config');
     await test.step('Expect the API key field empty, placeholder "Leave blank to keep existing key", not required (a key is stored)', () => expectKeyStored(page));
-    await test.step('Leave the API key field empty; change Welcome subheading; Save — expect 200', async () => {
+    await test.step('Leave the API key field empty; Assistant & Logos: change Welcome subheading; Save — expect 200', async () => {
+      await menuEntry(page, 'Assistant & Logos').click();
       await subheading(page).fill(`QA subheading ECFG-17 ${tag}`);
       expect((await saveConfig(page)).status()).toBe(200);
     });
     await test.step(`GET /api/tenants/${slug} — expect a key still set`, () => expectKeyFlag(page, testInfo));
-    await test.step('Reload the edit page — expect the placeholder still "Leave blank to keep existing key" (the key was kept)', async () => {
+    await test.step('Reload the edit page › LLM Config — expect the placeholder still "Leave blank to keep existing key" (the key was kept)', async () => {
       await page.reload();
+      await menuEntry(page, 'LLM Config').click();
       await expectKeyStored(page);
     });
   });
@@ -615,7 +764,7 @@ test.describe('Writes on a disposable tenant', () => {
   test('SA-ECFG-18 a new API key replaces the old one and is never echoed', async ({ page }, testInfo) => {
     await onD(page, testInfo, "This replaces D's LLM key with a dummy value; D's assistant will not answer afterwards.");
     const dummy = `qa-dummy-key-${tag}`;
-    await openEdit(page);
+    await openEdit(page, 'Configuration', 'LLM Config');
     await test.step(`Type the dummy key "${dummy}" in API key; Save — expect 200`, async () => {
       await page.locator('#llmApiKey').fill(dummy);
       expect((await saveConfig(page)).status()).toBe(200);
@@ -636,7 +785,7 @@ test.describe('Writes on a disposable tenant', () => {
   test('SA-ECFG-22 an MCP row without a server URL is dropped on save', async ({ page }, testInfo) => {
     await onD(page, testInfo);
     const name = `QA MCP no-url ${tag}`;
-    await openEdit(page);
+    await openEdit(page, 'Configuration', 'MCP connectors');
     await test.step(`Add MCP server with name "${name}" and no URL; Save — expect 200`, async () => {
       await page.getByRole('button', { name: 'Add MCP server' }).click();
       await page.locator(`[id="mcp-name-${await lastKey(page, 'mcp-name-')}"]`).fill(name);
@@ -652,7 +801,7 @@ test.describe('Writes on a disposable tenant', () => {
   test('SA-ECFG-23 an MCP row without a name is dropped on save', async ({ page }, testInfo) => {
     await onD(page, testInfo);
     const url = `https://example.gov.in/qa-no-name-${tag}`;
-    await openEdit(page);
+    await openEdit(page, 'Configuration', 'MCP connectors');
     await test.step(`Add MCP server with URL ${url} and no name; Save — expect 200`, async () => {
       await page.getByRole('button', { name: 'Add MCP server' }).click();
       await page.locator(`[id="mcp-url-${await lastKey(page, 'mcp-name-')}"]`).fill(url);
@@ -668,7 +817,7 @@ test.describe('Writes on a disposable tenant', () => {
   test('SA-ECFG-24 a valid MCP connector round-trips', async ({ page }, testInfo) => {
     await onD(page, testInfo);
     const name = `QA MCP ${tag}`;
-    await openEdit(page);
+    await openEdit(page, 'Configuration', 'MCP connectors');
     await test.step(`Add MCP server "${name}", https://example.gov.in/mcp, HTTP, Bearer, secret ref qa/ref, tools a,b; Save — expect 200`, async () => {
       await page.getByRole('button', { name: 'Add MCP server' }).click();
       const i = await lastKey(page, 'mcp-name-');
@@ -690,16 +839,16 @@ test.describe('Writes on a disposable tenant', () => {
       await expect.soft(page.locator(`[id="mcp-auth-${i}"] option:checked`)).toHaveText('Bearer');
       await expect.soft(page.locator(`[id="mcp-secret-${i}"]`)).toHaveValue('qa/ref');
       await expect.soft(page.locator(`[id="mcp-tools-${i}"]`)).toHaveValue(/^a,\s*b$/);
-      // The connector card is the ancestor holding both its first (name) and last (tools) field.
-      const card = page.locator(`[id="mcp-name-${i}"]`).locator(`xpath=ancestor::div[.//*[@id="mcp-tools-${i}"]][1]`);
-      await expect.soft(card.getByRole('checkbox', { name: 'Enabled' })).toBeChecked();
+      // The connector card is its group; its Enabled switch sits in the card's header (22 Oct).
+      const card = page.getByRole('group').filter({ has: page.locator(`[id="mcp-name-${i}"]`) }).last();
+      await expect.soft(card.getByRole('switch', { name: /^Enabled\b/ })).toBeChecked();
     });
   });
 
   test('SA-ECFG-25 an MCP server URL "not a url" is not blocked in the browser (server answer recorded)', async ({ page }, testInfo) => {
     await onD(page, testInfo);
     const name = `QA MCP bad-url ${tag}`;
-    await openEdit(page);
+    await openEdit(page, 'Configuration', 'MCP connectors');
     const res = await test.step(`Add MCP server "${name}" with URL "not a url"; Save — expect the PATCH to be sent (no client-side validation)`, async () => {
       await page.getByRole('button', { name: 'Add MCP server' }).click();
       const i = await lastKey(page, 'mcp-name-');
@@ -714,7 +863,7 @@ test.describe('Writes on a disposable tenant', () => {
 
   test('SA-ECFG-26 file size and types round-trip on edit', async ({ page }, testInfo) => {
     await onD(page, testInfo);
-    await openEdit(page);
+    await openEdit(page, 'Configuration', 'File Rules');
     await test.step('Set Max upload size (MB) 25; tick CSV; Save — expect 200', async () => {
       await page.locator('#filesizeMb').fill('25');
       await page.getByRole('checkbox', { name: 'CSV', exact: true }).check();
@@ -731,7 +880,7 @@ test.describe('Writes on a disposable tenant', () => {
   test('SA-ECFG-29 an OpenAPI YAML uploaded on edit is shown as current after reload', async ({ page }, testInfo) => {
     await onD(page, testInfo);
     const name = `qa-openapi-${tag}.yaml`;
-    await openEdit(page);
+    await openEdit(page, 'Configuration', 'Sources & modules');
     await test.step(`Pick ${name} in "OpenAPI YAML file"; Save — expect 200 and the upload POST /api/tenants/${slug}/openapi → 200`, async () => {
       const uploaded = page.waitForResponse((r) => r.request().method() === 'POST' && r.url().endsWith(`/api/tenants/${slug}/openapi`), { timeout: 30_000 });
       await page.getByLabel('OpenAPI YAML file').setInputFiles(file(name, 'application/yaml', YAML));
@@ -752,8 +901,9 @@ test.describe('Writes on a disposable tenant', () => {
     await onD(page, testInfo);
     const color = `#${createHash('sha1').update(`${process.env.PQA_RUN_ID}:writes:color`).digest('hex').slice(0, 6).toUpperCase()}`;
     await setStatus(page, slug, 'active');
-    await test.step(`Reload; set Primary brand color ${color}; Save — expect 200`, async () => {
+    await test.step(`Reload; Branding: set Primary brand color ${color}; Save — expect 200`, async () => {
       await page.reload();
+      await menuEntry(page, 'Branding').click();
       await page.locator('#primaryColor').fill(color);
       expect((await saveConfig(page)).status()).toBe(200);
     });
@@ -767,13 +917,86 @@ test.describe('Writes on a disposable tenant', () => {
     });
   });
 
+  test('SA-ECFG-34 the package is stored and decides enabledModules; the modules checklist is not saved', async ({ page }, testInfo) => {
+    await onD(page, testInfo, 'This test switches D to "AI Assistant only" and back to "Platform + AI Assistant" by PATCHing the page\'s own body.');
+    const setPackage = (p: string) =>
+      test.step(`PATCH /api/tenants/${slug} with the page's own body and features.package "${p}" — expect 200`, async () => {
+        const body = await captureConfigBody(page);
+        body.tenant.features = { ...(body.tenant.features ?? {}), package: p };
+        const res = await sendConfig(page, body);
+        expect(res.status(), await answer(res)).toBe(200);
+        return (await getTenant(page)).tenant;
+      });
+    const t = await setPackage('assistant');
+    await test.step('Expect package "assistant": AI Assistant, Search, KB Docs, Users & roles and Re-Approval Requests on; workflow surfaces and Divisions off', () => {
+      expect(t.features?.package).toBe('assistant');
+      for (const m of ['aiAssistant', 'kbSearch', 'documentIngestion', 'usersAndRoles', 'reApprovals']) expect.soft(t.enabledModules?.[m], m).toBe(true);
+      for (const m of ['parliamentDashboard', 'provisionalQuestions', 'admittedQuestions', 'completedQuestions', 'departmentDashboard', 'divisions']) expect.soft(t.enabledModules?.[m], m).toBe(false);
+    });
+    await openEdit(page, 'Configuration', 'Basic Info');
+    await test.step('Expect "AI Assistant only" chosen on Basic Info', () => expect(page.getByRole('radio', { name: /^AI Assistant only/ })).toBeChecked());
+    const back = await setPackage('platform_ai');
+    await test.step('Back on platform_ai: expect all 18 modules on', () => expect(Object.values(back.enabledModules ?? {})).toEqual(Array(18).fill(true)));
+    await openEdit(page, 'Configuration', 'Sources & modules');
+    await test.step('Untick "Advanced Dashboard" in Portal modules; Save — expect 200', async () => {
+      await page.getByRole('checkbox', { name: 'Advanced Dashboard', exact: true }).uncheck();
+      expect((await saveConfig(page)).status()).toBe(200);
+    });
+    await test.step('Expect advancedDashboard still on (the save rewrites enabledModules from the package); reload — ticked again', async () => {
+      expect((await getTenant(page)).tenant.enabledModules?.advancedDashboard).toBe(true);
+      await page.reload();
+      await expect(page.getByRole('checkbox', { name: 'Advanced Dashboard', exact: true })).toBeChecked();
+    });
+  });
+
+  test('SA-ECFG-35 accessibility bar, idle timeout and warning round-trip (0 turns the timeout off); 481 recorded (Q)', async ({ page }, testInfo) => {
+    await onD(page, testInfo);
+    await openEdit(page, 'Configuration', 'Basic Info');
+    await test.step('Turn the accessibility bar off; Idle timeout 0; Warning 5; Save — expect 200', async () => {
+      await page.locator('#accessibilityBar').uncheck();
+      await page.locator('#sessionTimeoutMinutes').fill('0');
+      await page.locator('#sessionWarningMinutes').fill('5');
+      expect((await saveConfig(page)).status()).toBe(200);
+    });
+    await test.step('Reload — expect the bar off, 0 and 5; GET features to match', async () => {
+      await page.reload();
+      await expect(page.locator('#accessibilityBar')).not.toBeChecked();
+      await expect(page.locator('#sessionTimeoutMinutes')).toHaveValue('0');
+      await expect(page.locator('#sessionWarningMinutes')).toHaveValue('5');
+      const f = (await getTenant(page)).tenant.features ?? {};
+      expect.soft([f.accessibilityBar, f.sessionTimeoutMinutes, f.sessionWarningMinutes]).toEqual([false, 0, 5]);
+    });
+    await test.step('Q: Idle timeout 481 (outside 0–480); Save — record whether it is refused and what is stored', async () => {
+      await page.locator('#sessionTimeoutMinutes').fill('481');
+      const sent = page.waitForResponse((r) => r.url().endsWith(`/api/tenants/${slug}`) && r.request().method() === 'PATCH', { timeout: 5_000 }).catch(() => null);
+      await page.getByRole('button', { name: 'Save configuration' }).click();
+      const res = await sent;
+      const kept = (await getTenant(page)).tenant.features?.sessionTimeoutMinutes;
+      await testInfo.attach('Q-timeout-481', { body: `${res ? `PATCH answered ${await answer(res)}` : 'no PATCH sent (refused in the browser)'}; stored sessionTimeoutMinutes: ${kept}`, contentType: 'text/plain' });
+    });
+  });
+
+  test("SA-ECFG-39 a Super Admin save never overwrites the Parliament admin's workflow settings", async ({ page }, testInfo) => {
+    await onD(page, testInfo);
+    const before = (await getTenant(page)).tenant.features?.workflow;
+    const body = await captureConfigBody(page);
+    const days = (before?.dueDateRule?.daysBefore ?? 1) === 7 ? 6 : 7;
+    body.tenant.features = { ...(body.tenant.features ?? {}), workflow: { ...(before ?? {}), dueDateRule: { ...(before?.dueDateRule ?? {}), daysBefore: days } } };
+    const res = await test.step(`PATCH /api/tenants/${slug} with the page's own body but features.workflow.dueDateRule.daysBefore ${days}`, () => sendConfig(page, body));
+    await test.step('Expect 200 and the stored workflow unchanged (spec §3.9, §9.2)', async () => {
+      await testInfo.attach('server-answer', { body: await answer(res), contentType: 'text/plain' });
+      expect.soft(res.status()).toBe(200);
+      expect((await getTenant(page)).tenant.features?.workflow).toEqual(before);
+    });
+  });
+
   test('SA-WAST-13 a wrong logo path saves and shows as a broken image on the portal sign-in card', async ({ page }, testInfo) => {
     await onD(page, testInfo);
-    await openEdit(page);
+    await openEdit(page, 'Configuration', 'Assistant & Logos');
     await test.step('Set Ministry crest to /nope/x.png; Save — expect 200 and no client complaint', async () => {
       await page.getByRole('textbox', { name: 'Ministry crest' }).fill('/nope/x.png');
       expect((await saveConfig(page)).status()).toBe(200);
-      await expect(page.getByText('Configuration saved.')).toBeVisible();
+      await expect(configSaved(page)).toBeVisible();
     });
     await setStatus(page, slug, 'active');
     await test.step(`Open ${env.portalUrl}/${slug} — expect an <img> for /nope/x.png that failed to load`, async () => {
@@ -792,11 +1015,12 @@ test.describe('Writes on a disposable tenant', () => {
 
   test('SA-ESTA-03 a status change saves immediately, without Save configuration', async ({ page }, testInfo) => {
     await onD(page, testInfo);
-    const to: Exclude<Status, 'archived'> = (await apiStatus(page, slug)) === 'suspended' ? 'inactive' : 'suspended';
-    await openEdit(page);
+    // Any move proves the immediate save; a suspended portal can only be reactivated (or archived) on the live card.
+    const to: Exclude<Status, 'archived'> = (await apiStatus(page, slug)) === 'suspended' ? 'active' : 'suspended';
+    await openEdit(page, 'Configuration', 'Status');
     await test.step(`Choose Portal status "${LABEL[to]}"; do not press Save — expect PATCH …/status 200 {"data":{"status":"${to}"}} and "Portal status updated."`, async () => {
       const saved = page.waitForResponse((r) => r.url().endsWith(`/api/tenants/${slug}/status`) && r.request().method() === 'PATCH');
-      await page.locator('#status').selectOption(to);
+      await pressAndConfirm(page, statusCard(page).getByRole('button', { name: MOVE[to] }));
       const res = await saved;
       expect(res.status()).toBe(200);
       expect(await res.json()).toEqual({ data: { status: to } });
@@ -804,11 +1028,11 @@ test.describe('Writes on a disposable tenant', () => {
     });
     await test.step(`Reload — expect Portal status "${LABEL[to]}"`, async () => {
       await page.reload();
-      await expect(page.locator('#status')).toHaveValue(to);
+      await expect(shownStatus(page)).toHaveText(to);
     });
     await test.step(`Open /tenants — expect /${slug} listed as ${to}`, async () => {
       await page.goto('/tenants');
-      await expect(page.getByRole('row').filter({ hasText: `/${slug}` }).getByRole('cell').nth(1)).toHaveText(to);
+      await expect(page.getByRole('row').filter({ hasText: `/${slug}` }).getByText(to, { exact: true })).toBeVisible();
     });
   });
 
@@ -818,8 +1042,8 @@ test.describe('Writes on a disposable tenant', () => {
       await setStatus(page, slug, s);
       await test.step(`Reload — expect ${s === 'suspended' ? 'an' : 'no'} Archive button while ${s}`, async () => {
         await page.reload();
-        await expect(page.locator('#status')).toHaveValue(s);
-        await expect(page.getByRole('button', { name: /^Archive\b/ })).toHaveCount(s === 'suspended' ? 1 : 0);
+        await expect(shownStatus(page)).toHaveText(s);
+        await expect(statusCard(page).getByRole('button', { name: /^Archive\b/ })).toHaveCount(s === 'suspended' ? 1 : 0);
       });
     }
   });
@@ -892,6 +1116,8 @@ test.describe('Writes on a disposable tenant', () => {
     await onD(page, testInfo);
     const dialogs: string[] = [];
     page.on('dialog', (d) => {
+      // A refused save leaves the form unsaved; leaving the page then raises the unsaved-changes guard. Accept it — it is not markup running.
+      if (d.type() === 'beforeunload') return void d.accept();
       dialogs.push(d.message());
       void d.dismiss();
     });
@@ -902,7 +1128,7 @@ test.describe('Writes on a disposable tenant', () => {
       return true;
     };
     const stored = { heading: true, division: true };
-    await openEdit(page);
+    await openEdit(page, 'Configuration', 'Assistant & Logos');
     await test.step(`Set Welcome heading to ${PAYLOAD}; Save — expect 200 (or a 403 from the edge firewall, with nothing stored)`, async () => {
       await page.getByPlaceholder('Ready when you are.').fill(PAYLOAD);
       const res = await saveConfig(page);
@@ -920,9 +1146,9 @@ test.describe('Writes on a disposable tenant', () => {
         stored.division = false;
         const list = (await (await page.request.get(`/api/tenants/${slug}/departments`)).json()).data as Array<{ name: string }>;
         expect(list.map((d) => d.name), 'division stored despite the 403').not.toContain(PAYLOAD);
-      } else await expect(page.getByText('Divisions saved to the ministry portal schema.')).toBeVisible({ timeout: 30_000 });
+      } else await expect(divisionsSaved(page)).toBeVisible({ timeout: 30_000 });
     });
-    await openEdit(page);
+    await openEdit(page, 'Configuration', 'Assistant & Logos');
     await test.step('Expect the heading shown as text (when stored), no <img src="x"> rendered, no dialog', async () => {
       if (stored.heading) await expect(page.getByPlaceholder('Ready when you are.')).toHaveValue(PAYLOAD);
       await expect(page.locator('img[src="x"]')).toHaveCount(0);
@@ -1049,8 +1275,9 @@ test.describe('Writes on a disposable tenant', () => {
         await page.getByRole('button', { name: 'Save people' }).click();
         await expect(page.getByRole('button', { name: 'Save people' })).toBeEnabled({ timeout: 30_000 });
       });
-      await test.step('Expect the error shown and exactly two POSTs (the 3rd never attempted)', async () => {
-        await expect.soft(page.getByText('QA: simulated failure on the 2nd person')).toBeVisible();
+      await test.step('Expect the "People not saved" alert with the error, and exactly two POSTs (the 3rd never attempted)', async () => {
+        await expect.soft(page.getByText('People not saved').first()).toBeVisible(); // inline alert and toast
+        await expect.soft(page.getByText('QA: simulated failure on the 2nd person').first()).toBeVisible();
         expect(posts).toBe(2);
       });
       await test.step('Remove the interception; press Save people again — expect "People saved to the ministry portal schema."', async () => {
@@ -1090,17 +1317,22 @@ test.describe('Writes on a disposable tenant', () => {
 
     test('cleanup: deactivate the people this file added to the disposable tenant', async ({ page }) => {
       if (!(await exists(page, slug))) return;
+      const refused = new Set<string>();
       for (let i = 0; i < 20; i++) {
         await openEdit(page, 'People');
         let target: string | undefined;
-        for (const e of (await values(page, 'email-')).filter((v) => v.includes(`+qa${tag}-`))) {
+        for (const e of (await values(page, 'email-')).filter((v) => v.includes(`+qa${tag}-`) && !refused.has(v))) {
           if ((await personState(page, e)) === 'active') {
             target = e;
             break;
           }
         }
         if (!target) return;
-        await deactivate(page, target);
+        if (!(await deactivate(page, target, false))) {
+          // Live (22 Oct): a Ministry admin row is refused with "Super admin users cannot be deleted." (A4.2 documents no exception).
+          refused.add(target);
+          test.info().annotations.push({ type: 'deviation', description: `Deactivate ${target} was refused (a Ministry admin row: "Super admin users cannot be deleted."); left active on the disposable tenant, which is archived at the end` });
+        }
       }
     });
   });
@@ -1160,7 +1392,10 @@ test.describe('Writes on a disposable tenant', () => {
     await test.step(`Set designations of "${name}" to "C, D"; Save divisions — expect no POST …/positions`, async () => {
       const key = await keyOf(page, 'dname-', name);
       expect(key, `"${name}" listed`).toBeDefined();
-      await page.locator(`[id="ddesig-${key}"]`).fill('C, D');
+      const desig = page.locator(`[id="ddesig-${key}"]`);
+      // Live (22 Oct): saved rows show no Designations field — fail fast on the documented field rather than time out.
+      await expect(desig, 'A4.3: a saved division has a Designations field (edits to it are not applied)').toBeAttached({ timeout: 5_000 });
+      await desig.fill('C, D');
       await saveDivisions(page);
       expect(positions).toEqual([]);
     });
@@ -1176,7 +1411,7 @@ test.describe('Writes on a disposable tenant', () => {
       expect((await uploaded).ok()).toBe(true);
     });
     await test.step('Expect no "Divisions saved…" message (verifying the profile is ministry-portal phase)', async () => {
-      await expect(page.getByText('Divisions saved to the ministry portal schema.')).toHaveCount(0);
+      await expect(divisionsSaved(page)).toHaveCount(0);
     });
   });
 
@@ -1250,8 +1485,9 @@ test.describe('Writes on a disposable tenant', () => {
       await page.getByRole('button', { name: 'Save divisions' }).click();
       await expect(page.getByRole('button', { name: 'Save divisions' })).toBeEnabled({ timeout: 30_000 });
     });
-    await test.step('Expect the error shown and exactly two POSTs (the 3rd never attempted)', async () => {
-      await expect.soft(page.getByText('QA: simulated failure on the 2nd division')).toBeVisible();
+    await test.step('Expect the "Divisions not saved" alert with the error, and exactly two POSTs (the 3rd never attempted)', async () => {
+      await expect.soft(page.getByText('Divisions not saved').first()).toBeVisible(); // inline alert and toast
+      await expect.soft(page.getByText('QA: simulated failure on the 2nd division').first()).toBeVisible();
       expect(posts).toBe(2);
     });
     await page.unroute(`**/api/tenants/${slug}/departments`);
@@ -1286,7 +1522,7 @@ test.describe('Writes on a disposable tenant', () => {
     await test.step(`Type "${to}" in the role name; click elsewhere — expect PATCH …/roles/<id> 2xx`, async () => {
       const renamed = page.waitForResponse((r) => r.request().method() === 'PATCH' && /\/roles\/[^/]+$/.test(new URL(r.url()).pathname));
       await page.locator('#role-rename').fill(to);
-      await page.getByRole('heading', { name: 'Roles' }).click();
+      await page.locator('#role-rename').blur();
       expect((await renamed).ok()).toBe(true);
     });
     await openEdit(page, 'Roles');
@@ -1306,11 +1542,11 @@ test.describe('Writes on a disposable tenant', () => {
     });
     await test.step('Focus the role name and click elsewhere without changing it', async () => {
       await page.locator('#role-rename').focus();
-      await page.getByRole('heading', { name: 'Roles' }).click();
+      await page.locator('#role-rename').blur();
     });
     await test.step(`Type "  ${name}  " (same name, extra spaces); click elsewhere`, async () => {
       await page.locator('#role-rename').fill(`  ${name}  `);
-      await page.getByRole('heading', { name: 'Roles' }).click();
+      await page.locator('#role-rename').blur();
     });
     await test.step('Wait 2 s — expect no role write request', async () => {
       await page.waitForTimeout(2_000); // asserting an absence: give a stray request time to appear
@@ -1318,36 +1554,37 @@ test.describe('Writes on a disposable tenant', () => {
     });
   });
 
-  test('SA-EROL-07 clone copies permissions; a blank clone name falls back to the source name', async ({ page }, testInfo) => {
+  test('SA-EROL-07 clone opens the new role with the same permissions; a blank clone name falls back to the source name', async ({ page }, testInfo) => {
     await onD(page, testInfo);
     const [src, copy] = [`QA Clone src ${tag}`, `QA Clone ${tag}`];
     const perms = ['users:read', 'roles:read'];
     await createRole(page, src, perms);
-    const clone = async (as: string) => {
+    const clone = async (as: string): Promise<boolean> => {
       const cloned = page.waitForResponse((r) => r.request().method() === 'POST' && r.url().endsWith('/clone'));
       await page.getByRole('textbox', { name: /clone/i }).fill(as);
       await page.getByRole('button', { name: /^Clone\b/ }).click();
-      expect((await cloned).ok(), 'POST …/clone').toBe(true);
+      return (await cloned).ok();
     };
-    await test.step(`Clone "${src}" as "${copy}" — expect "${copy}" listed`, async () => {
-      await clone(copy);
+    let second = false;
+    await test.step(`Clone "${src}" as "${copy}" — expect "${copy}" listed and opened at once (A4.4), with exactly ${perms.join(', ')} ticked, as on the source`, async () => {
+      expect(await clone(copy), 'POST …/clone').toBe(true);
       await expect(roleButton(page, copy)).toBeVisible();
-    });
-    await test.step(`Open "${copy}" — expect exactly ${perms.join(', ')} ticked, as on the source`, async () => {
-      await selectRole(page, copy);
+      await expect(page.locator('#role-rename')).toHaveValue(copy);
       for (const p of perms) await expect(page.getByRole('checkbox', { name: p, exact: true })).toBeChecked();
       await expect(page.locator('input[type="checkbox"]:checked')).toHaveCount(perms.length);
     });
     await test.step(`Open "${src}"; clone with a blank name — expect a second role named "${src}"`, async () => {
       await selectRole(page, src);
-      await clone('');
-      await expect(roleButton(page, src)).toHaveCount(2);
+      second = await clone('');
+      // Live (22 Oct): 409 "A role with this name already exists for this tenant" — the fallback name collides with the source.
+      expect.soft(second, 'A4.4: a blank clone name falls back to the source name, giving a second role of that name').toBe(true);
+      if (second) await expect(roleButton(page, src)).toHaveCount(2);
     });
-    await test.step(`Delete both clones ("${copy}" and the second "${src}")`, async () => {
-      for (const [name, nth] of [[copy, 0], [src, 1]] as const) {
+    await test.step(`Delete the clones ("${copy}"${second ? ` and the second "${src}"` : ''}; Delete asks for confirmation on the live build)`, async () => {
+      for (const [name, nth] of [[copy, 0], ...(second ? [[src, 1] as const] : [])] as const) {
         await selectRole(page, name, nth);
         const deleted = page.waitForResponse((r) => r.request().method() === 'DELETE' && r.url().includes('/roles/'));
-        await page.getByRole('button', { name: /^Delete\b/ }).click();
+        await pressAndConfirm(page, page.getByRole('button', { name: /^Delete\b/ }));
         expect((await deleted).ok()).toBe(true);
       }
     });
@@ -1365,6 +1602,12 @@ test.describe('Writes on a disposable tenant', () => {
     await test.step(`Press Delete on "${name}" — expect DELETE …/roles/<id> 2xx at once, no dialog`, async () => {
       const deleted = page.waitForResponse((r) => r.request().method() === 'DELETE' && r.url().includes('/roles/'));
       await page.getByRole('button', { name: /^Delete\b/ }).click();
+      const modal = page.getByRole('dialog').or(page.getByRole('alertdialog')).filter({ hasText: /Delete the role/ }).first();
+      if (await modal.waitFor({ timeout: 2_000 }).then(() => true, () => false)) {
+        const asked = (await modal.innerText()).replace(/\s+/g, ' ').trim();
+        await modal.getByRole('button', { name: /^Delete\b/ }).click(); // confirm, so the role is still removed
+        expect.soft(asked, 'A4.4: Delete has no confirmation dialog').toBe('');
+      }
       expect((await deleted).ok()).toBe(true);
       expect(dialog, 'a confirmation dialog appeared').toBe(false);
       await expect(roleButton(page, name)).toHaveCount(0);
@@ -1389,10 +1632,10 @@ test.describe('Writes on a disposable tenant', () => {
       await expectPortal(page, env, slug, false);
       await look(s);
     }
-    await test.step(`Open ${editUrl}; press Archive — expect "Archived. A new portal can be created for this ministry."`, async () => {
+    await test.step(`Open ${editUrl} › Status; press Archive — expect "Archived. A new portal can be created for this ministry."`, async () => {
       await page.goto(editUrl);
-      page.once('dialog', (d) => d.accept());
-      await page.getByRole('button', { name: /^Archive\b/ }).click();
+      await menuEntry(page, 'Status').click();
+      await pressAndConfirm(page, page.getByRole('button', { name: /^Archive\b/ }));
       await expect(page.getByText('Archived. A new portal can be created for this ministry.')).toBeVisible();
     });
     await expectPortal(page, env, slug, false);
@@ -1460,11 +1703,11 @@ test.describe('Writes on a disposable tenant', () => {
         expect((await res.json()).error?.message).toBe('A portal for this ministry already exists');
         expect(await apiStatus(page, slug)).toBe('archived');
       });
-      await test.step(`Open ${editUrl}; press Unarchive — expect "A portal for this ministry already exists" and Unarchive still offered`, async () => {
+      await test.step(`Open ${editUrl} › Status; press Unarchive — expect "A portal for this ministry already exists" and Unarchive still offered`, async () => {
         await page.goto(editUrl);
-        page.once('dialog', (d) => d.accept());
-        await page.getByRole('button', { name: /^Unarchive\b/ }).click();
-        await expect(page.getByText('A portal for this ministry already exists')).toBeVisible();
+        await menuEntry(page, 'Status').click();
+        await pressAndConfirm(page, page.getByRole('button', { name: /^Unarchive\b/ }));
+        await expect(page.getByText('A portal for this ministry already exists').first()).toBeVisible(); // inline and toast
         await expect(page.getByRole('button', { name: /^Unarchive\b/ })).toBeVisible();
         expect(await apiStatus(page, slug)).toBe('archived');
       });
@@ -1475,6 +1718,6 @@ test.describe('Writes on a disposable tenant', () => {
   });
 
   test('cleanup: leave every tenant this file created archived', async ({ page }) => {
-    for (const s of [slug, slug2, raceA, raceB]) await retire(page, s);
+    for (const s of [slug, slug2, raceA, raceB, slugP]) await retire(page, s);
   });
 });

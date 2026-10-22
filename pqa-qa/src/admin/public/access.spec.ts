@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { test, expect } from '../fixtures.js';
 import { trackedGap } from '../../support/annotations.js';
 
@@ -35,6 +36,9 @@ test.describe('A1.3 Route protection (signed out)', () => {
     ['PATCH', '/api/tenants/{t}', {}],
     ['PATCH', '/api/tenants/{t}/status', { status: 'not-a-status' }],
     ['POST', '/api/admins/otp/request', { name: 'QA', email: 'qa@example.com' }],
+    // 21 Oct spec: the temporary delete (a random UUID no tenant has) and the Bedrock model check.
+    ['DELETE', '/api/tenants', { ids: [randomUUID()] }],
+    ['POST', '/api/llm/bedrock-models', {}],
   ] as const) {
     test(`${method === 'GET' ? 'SA-AUTH-03' : 'SA-SEC-13'} ${method} ${path} without a session is 401 JSON, not a redirect`, async ({ request, env }) => {
       const url = path.replace('{t}', env.testTenant);

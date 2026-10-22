@@ -23,7 +23,8 @@ const LOGOS = ['ministryCrest', 'appIcon', 'appWordmark', 'botIcon', 'botIconWhi
 
 const heading = (page: Page, name: string) => page.getByRole('heading', { level: 2, name, exact: true });
 const backButton = (page: Page) => page.getByRole('button', { name: 'Back', exact: true });
-const showAdvanced = (page: Page) => page.getByRole('button', { name: 'Show advanced: pin exact tokens' });
+// One disclosure button opens and closes the panel; its name runs on into its description.
+const showAdvanced = (page: Page) => page.getByRole('button', { name: /^Exact tokens \(advanced\)/ });
 const years = (page: Page) => page.getByRole('spinbutton');
 const randomSlug = () => `qa${Math.random().toString(36).slice(2, 6).padEnd(4, '0')}`;
 const question = (description: string) => test.info().annotations.push({ type: 'question', description });
@@ -107,7 +108,7 @@ test.describe('A3.2 Step 1 — Branding', () => {
   test('SA-WBRD-03 each preset sets all three colours and all 21 tokens', async ({ page, env }) => {
     const writes = await blockWrites(page);
     await openAt(page, env, 'Branding');
-    await test.step('Press "Show advanced: pin exact tokens"', () => showAdvanced(page).click());
+    await test.step('Press "Exact tokens (advanced)"', () => showAdvanced(page).click());
     const triples: string[] = [];
     for (const preset of PRESETS) {
       await test.step(`Choose preset "${preset}" — expect every #override-<token> filled and the three colours set`, async () => {
@@ -140,14 +141,18 @@ test.describe('A3.2 Step 1 — Branding', () => {
     await nothingSent(writes);
   });
 
-  test('SA-WBRD-05 primary and accent colours are optional', async ({ page, env }) => {
+  test('SA-WBRD-05 primary and accent colours are optional: blank or spaces count as unset', async ({ page, env }) => {
     const writes = await blockWrites(page);
     await openAt(page, env, 'Branding');
-    await test.step('Clear #primaryColor and #accentColor; press Next — expect step 2', async () => {
-      await page.locator('#primaryColor').fill('');
-      await page.locator('#accentColor').fill('');
-      await advance(page, 'Assistant & Logos');
-    });
+    for (const [what, value] of [['blank', ''], ['3 spaces', '   ']] as const) {
+      await test.step(`Set #primaryColor and #accentColor to ${what}; press Next — expect step 2; press Back`, async () => {
+        await page.locator('#primaryColor').fill(value);
+        await page.locator('#accentColor').fill(value);
+        await advance(page, 'Assistant & Logos');
+        await backButton(page).click();
+        await expect(heading(page, 'Branding')).toBeVisible();
+      });
+    }
     await nothingSent(writes);
   });
 
@@ -225,18 +230,18 @@ test.describe('A3.2 Step 1 — Branding', () => {
     const writes = await blockWrites(page);
     await openAt(page, env, 'Branding');
     const fields = page.locator('[id^="override-"]');
-    await test.step('Expect "Show advanced: pin exact tokens" and no token field visible', async () => {
+    await test.step('Expect "Exact tokens (advanced)" and no token field visible', async () => {
       await expect(showAdvanced(page)).toBeVisible();
       await expect(page.locator('#override-brand')).toBeHidden();
     });
-    await test.step(`Press "Show advanced: pin exact tokens" — expect 21 fields: ${TOKENS.join(', ')}`, async () => {
+    await test.step(`Press "Exact tokens (advanced)" — expect 21 fields: ${TOKENS.join(', ')}`, async () => {
       await showAdvanced(page).click();
       await expect(fields).toHaveCount(TOKENS.length);
       expect(await fields.evaluateAll((els) => els.map((el) => el.id))).toEqual(TOKENS.map((t) => `override-${t}`));
       for (const token of TOKENS) await expect(page.locator(`#override-${token}`)).toBeVisible();
     });
-    await test.step('Press "Hide advanced: pin exact tokens" — expect the fields hidden again', async () => {
-      await page.getByRole('button', { name: 'Hide advanced: pin exact tokens' }).click();
+    await test.step('Press "Exact tokens (advanced)" again — expect the fields hidden again', async () => {
+      await showAdvanced(page).click();
       await expect(page.locator('#override-brand')).toBeHidden();
     });
     await nothingSent(writes);
@@ -245,7 +250,7 @@ test.describe('A3.2 Step 1 — Branding', () => {
   test('SA-WBRD-13 an invalid advanced token value is rejected', async ({ page, env }) => {
     const writes = await blockWrites(page);
     await openAt(page, env, 'Branding');
-    await test.step('Press "Show advanced: pin exact tokens"; set #override-brand to "red"', async () => {
+    await test.step('Press "Exact tokens (advanced)"; set #override-brand to "red"', async () => {
       await showAdvanced(page).click();
       await page.locator('#override-brand').fill('red');
     });
@@ -367,7 +372,8 @@ test.describe('A3.3 Step 2 — Assistant & Logos', () => {
     await test.step('Set Ministry crest to "/nope/x.png" — expect its preview image broken', async () => {
       await page.locator('#logo-ministryCrest').fill('/nope/x.png');
       const preview = page.locator('img[src*="/nope/x.png"]').first();
-      await expect.poll(() => preview.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth === 0)).toBe(true);
+      // The portal answers a missing path with a 404 page only after ~10 s (curl, 22 Oct).
+      await expect.poll(() => preview.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth === 0), { timeout: 30_000 }).toBe(true);
     });
     await test.step('Press Next — expect step 3', () => advance(page, 'LLM Config'));
     await nothingSent(writes);

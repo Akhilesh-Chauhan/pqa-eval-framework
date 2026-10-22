@@ -9,6 +9,13 @@ const setCookies = (res: APIResponse): string[] =>
 const expires = (cookies: string[], name: string): boolean =>
   cookies.some((c) => c.startsWith(`${name}=`) && /max-age=0|expires=thu, 01 jan 1970/i.test(c));
 const setsValue = (cookies: string[], name: string): boolean => cookies.some((c) => c.startsWith(`${name}=`) && !c.startsWith(`${name}=;`));
+const decoded = (v: string): string => {
+  try {
+    return decodeURIComponent(v);
+  } catch {
+    return v;
+  }
+};
 
 test.describe('A1.3 Route protection (signed out)', () => {
   test('SA-AUTH-04 an unauthenticated request clears the admin cookies', async ({ request, browser, env }) => {
@@ -133,6 +140,36 @@ test.describe('A6 Auth routes (signed out)', () => {
       const location = new URL(res.headers()['location'] ?? '', env.adminUrl);
       test.info().annotations.push({ type: 'observed', description: `Location: ${location.origin}${location.pathname}` });
       expect(location.pathname, 'bounced back to the admin /login — identity service not reached').not.toBe('/login');
+    });
+  });
+
+  test('SA-AUTH-38 the SSO login route never carries a hostile return_to onward', async ({ request }) => {
+    for (const target of ['//evil.com', 'https://evil.com/tenants', '/evil']) {
+      const res = await test.step(`Send GET /api/auth/oauth/login?return_to=${encodeURIComponent(target)}, not following redirects`, () =>
+        request.get(`/api/auth/oauth/login?return_to=${encodeURIComponent(target)}`, { maxRedirects: 0 }),
+      );
+      await test.step('Expect "evil" nowhere in Location or Set-Cookie; a visible return_to is /tenants', async () => {
+        const location = res.headers()['location'] ?? '';
+        const carried = [location, ...setCookies(res)].map(decoded);
+        expect.soft(carried.filter((v) => /evil/i.test(v)), `return_to=${target} carried onward`).toEqual([]);
+        // A1.2/A6 do not say how the value travels; when it is visible it must have been reduced to /tenants.
+        const visible = carried.flatMap((v) => [...v.matchAll(/return_to=([^&;\s]+)/g)].map((m) => m[1]));
+        for (const v of visible) expect.soft(v, `visible return_to for ${target}`).toBe('/tenants');
+        test.info().annotations.push({ type: 'observed', description: `${target}: HTTP ${res.status()}, return_to ${visible.length ? `carried as ${visible.join(', ')}` : 'not visible (opaque state or cookie)'}` });
+      });
+    }
+  });
+
+  test('SA-AUTH-40 a sign-in code for a non-government address is refused', async ({ request }) => {
+    // example.com is reserved: even a missing check cannot deliver a code anywhere real.
+    const res = await test.step('Send POST /api/auth/otp/request body {"email":"qa.nobody@example.com"}', () =>
+      request.post('/api/auth/otp/request', { data: { email: 'qa.nobody@example.com' }, failOnStatusCode: false }),
+    );
+    await test.step('Expect a 4xx with "Use an official Government of India email address (gov.in or nic.in)." (spec §6.6)', async () => {
+      test.info().annotations.push({ type: 'question', description: `HTTP ${res.status()} ${await res.text()}` });
+      expect(res.status()).toBeGreaterThanOrEqual(400);
+      expect(res.status()).toBeLessThan(500);
+      expect.soft(await res.text()).toContain('Use an official Government of India email address (gov.in or nic.in).');
     });
   });
 

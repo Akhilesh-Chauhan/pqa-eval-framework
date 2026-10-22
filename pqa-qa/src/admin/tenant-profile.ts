@@ -7,9 +7,9 @@ export const LOGOS: Record<string, string> = {
   'App icon (collapsed sidebar)': 'https://www.ux4g.gov.in/images/logo-download/RailTel/logo.png',
   'App wordmark (expanded sidebar)': 'https://www.ux4g.gov.in/images/logo-download/@GOV/logo.png',
   'Assistant avatar': 'https://www.ux4g.gov.in/images/logo-download/iGOT/logo.png',
-  'Assistant avatar (on color)': '/botIcon-white.svg',
+  'Assistant avatar (on colour)': '/botIcon-white.svg',
   'Assistant splash logo': 'https://www.ux4g.gov.in/images/logo-download/Competition-Commission-of-India-(CCI)/logo.png',
-  'Assistant splash logo (on color)': '/botLogo-white.svg',
+  'Assistant splash logo (on colour)': '/botLogo-white.svg',
 };
 
 export interface Division {

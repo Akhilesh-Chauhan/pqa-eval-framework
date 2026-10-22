@@ -10,13 +10,18 @@ import { notMeasured } from '../support/annotations.js';
 
 type Writes = Awaited<ReturnType<typeof blockWrites>>;
 
-const STEPS = ['Basic Info', 'Branding', 'Assistant & Logos', 'LLM Config', 'File Rules', 'Departments', 'Sources & modules', 'Review & Submit'];
+const STEPS = ['Basic Info', 'Branding', 'Assistant & Logos', 'LLM Config', 'File Rules', 'Departments', 'Sources', 'Review & Submit'];
 // Never the real key: nothing is submitted, and the step-3 fields only need to be non-blank.
 const DUMMY_LLM = { apiKey: 'dummy-key', baseUrl: 'https://example.org', model: 'm', embeddingModel: 'e' };
 const CHARSET_MSG = 'Lowercase letters, numbers and single hyphens only, and not a reserved name.';
+const GOI_MSG = 'Use an official Government of India email address (gov.in or nic.in).';
+const PACKAGES = ['Platform + AI Assistant', 'Platform only', 'AI Assistant only'];
 const lengthMsg = (n: number) => `Must be exactly 6 characters (this one is ${n}).`;
 
 const heading = (page: Page, name: string) => page.getByRole('heading', { level: 2, name, exact: true });
+const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// A card's accessible name may run on into its description, so match the title at the start.
+const packageRadio = (page: Page, title: string) => page.getByRole('radio', { name: new RegExp(`^${esc(title)}`) });
 const backButton = (page: Page) => page.getByRole('button', { name: 'Back', exact: true });
 const randomSlug = () => `qa${Math.random().toString(36).slice(2, 6).padEnd(4, '0')}`;
 const adminOf = (env: AdminEnv) => ({ name: 'QA Admin', email: 'qa.admin@example.gov.in' });
@@ -97,14 +102,13 @@ async function toReview(page: Page, env: AdminEnv): Promise<void> {
   await fillWizardToReview(page, { ministry, slug: randomSlug(), adminName: admin.name, adminEmail: admin.email, llm: DUMMY_LLM });
 }
 
-/** The Review row's Edit button: the nearest ancestor of the row label that holds a button. */
-const reviewEdit = (page: Page, row: string) =>
-  page.getByText(row, { exact: true }).locator('xpath=ancestor::*[.//button][1]').getByRole('button', { name: 'Edit' });
+/** The Review summary's "Edit <step>" button (one summary region per step). */
+const reviewEdit = (page: Page, step: string) => page.getByRole('button', { name: `Edit ${step}`, exact: true });
 
 /** From a step opened with a Review "Edit" link: jump back to step 7 with the step list, press Create tenant. */
 async function createFromReview(page: Page): Promise<void> {
-  await test.step('Click "8. Review & Submit" in the step list to return to step 7', async () => {
-    await page.getByRole('button', { name: '8. Review & Submit' }).click();
+  await test.step('Click "Step 8: Review & Submit" in the step list to return to step 7', async () => {
+    await page.getByRole('button', { name: /^Step 8: Review & Submit/ }).click();
     const reached = await heading(page, 'Review & Submit').waitFor({ timeout: 5_000 }).then(() => true, () => false);
     if (!reached) {
       const at = await page.getByRole('heading', { level: 2 }).first().textContent();
@@ -114,7 +118,7 @@ async function createFromReview(page: Page): Promise<void> {
         detail: `the step list did not jump to step 7 (showed "${at}"), so Create cannot be pressed with an earlier step invalid; seeding the sessionStorage draft cannot help: the current step is not part of it, so a reload always opens step 0`,
       });
     }
-    test.info().annotations.push({ type: 'note', description: 'Step 7 was reached with the "8. Review & Submit" step-list button.' });
+    test.info().annotations.push({ type: 'note', description: 'Step 7 was reached with the "Step 8: Review & Submit" step-list button.' });
   });
   await test.step('Press Create tenant', () => page.getByRole('button', { name: 'Create tenant' }).click());
 }
@@ -123,9 +127,10 @@ test.describe('A3.0 Wizard navigation, blocking and draft', () => {
   test('SA-WNAV-01 the step list shows the eight steps in order', async ({ page }) => {
     const writes = await blockWrites(page);
     await openWizard(page);
-    const labels = STEPS.map((s, i) => `${i + 1}. ${s}`);
-    await test.step(`Expect the step list: ${labels.join(' · ')}`, async () => {
-      await expect(page.getByRole('main').getByRole('list').first().getByRole('button')).toHaveText(labels);
+    await test.step(`Expect the step list: ${STEPS.map((s, i) => `Step ${i + 1}: ${s}`).join(' · ')}`, async () => {
+      const steps = page.getByRole('navigation', { name: 'Create tenant steps' }).getByRole('button');
+      await expect(steps).toHaveCount(STEPS.length);
+      for (const [i, s] of STEPS.entries()) await expect(steps.nth(i)).toHaveAccessibleName(new RegExp(`^Step ${i + 1}: ${esc(s)},`));
     });
     await nothingSent(writes);
   });
@@ -180,17 +185,16 @@ test.describe('A3.0 Wizard navigation, blocking and draft', () => {
   });
 
   // The spec's router test and its siblings: break one field on an earlier step, press Create from step 7.
-  const ROUTES: Array<{ id: string; title: string; row: string; step: string; change: string; act: (page: Page) => Promise<unknown>; message: string }> = [
-    { id: 'SA-WNAV-05', title: 'an assistant error', row: 'Assistant name', step: 'Assistant & Logos', change: 'clear Assistant name (#displayName)', act: (p) => p.locator('#displayName').fill(''), message: 'Required.' },
-    { id: 'SA-WNAV-06', title: 'a branding error', row: 'Primary color', step: 'Branding', change: 'set Primary brand color to "red"', act: (p) => p.locator('#primaryColor').fill('red'), message: 'Enter a valid color.' },
-    { id: 'SA-WNAV-07', title: 'an LLM error', row: 'LLM', step: 'LLM Config', change: 'clear Chat model (#model)', act: (p) => p.locator('#model').fill(''), message: 'Required.' },
-    { id: 'SA-WNAV-08', title: 'a file-type error', row: 'Max upload size', step: 'File Rules', change: 'untick PDF, the only ticked type', act: (p) => p.getByRole('checkbox', { name: 'PDF', exact: true }).uncheck(), message: 'Select at least one file extension.' },
-    { id: 'SA-WNAV-09', title: 'a department error', row: 'Departments', step: 'Departments', change: 'press "+ Add division" and leave the row blank', act: (p) => p.getByRole('button', { name: '+ Add division' }).click(), message: 'Required.' },
+  const ROUTES: Array<{ id: string; title: string; step: string; change: string; act: (page: Page) => Promise<unknown>; message: string }> = [
+    { id: 'SA-WNAV-05', title: 'an assistant error', step: 'Assistant & Logos', change: 'clear Assistant name (#displayName)', act: (p) => p.locator('#displayName').fill(''), message: 'Required.' },
+    { id: 'SA-WNAV-06', title: 'a branding error', step: 'Branding', change: 'set Primary brand color to "red"', act: (p) => p.locator('#primaryColor').fill('red'), message: 'Enter a valid color.' },
+    { id: 'SA-WNAV-07', title: 'an LLM error', step: 'LLM Config', change: 'clear Chat model (#model)', act: (p) => p.locator('#model').fill(''), message: 'Required.' },
+    { id: 'SA-WNAV-08', title: 'a file-type error', step: 'File Rules', change: 'untick PDF, the only ticked type', act: (p) => p.getByRole('checkbox', { name: 'PDF', exact: true }).uncheck(), message: 'Select at least one file extension.' },
+    { id: 'SA-WNAV-09', title: 'a department error', step: 'Departments', change: 'press "Add division" and leave the row blank', act: (p) => p.getByRole('button', { name: /^\+? ?Add division$/ }).click(), message: 'Required.' },
     {
       id: 'SA-WNAV-10',
       title: 'a source-trust error',
-      row: 'Source websites',
-      step: 'Sources & modules',
+      step: 'Sources',
       change: 'add https://www.india.gov.in and leave the trust box unticked',
       act: async (p) => {
         await p.locator('#sourceUrl').fill('https://www.india.gov.in');
@@ -198,13 +202,14 @@ test.describe('A3.0 Wizard navigation, blocking and draft', () => {
       },
       message: 'Confirm these URLs are trustworthy before saving.',
     },
+    { id: 'SA-WNAV-13', title: 'missing Bedrock keys', step: 'LLM Config', change: 'choose provider Bedrock and leave the access and secret keys blank', act: (p) => p.locator('#provider').selectOption('bedrock'), message: 'Access key and secret key are required for Bedrock.' },
   ];
   for (const r of ROUTES) {
     test(`${r.id} Create from step 7 routes ${r.title} to "${r.step}" and sends nothing`, async ({ page, env }) => {
       const writes = await blockWrites(page);
       await toReview(page, env);
-      await test.step(`Press Edit on the "${r.row}" row — expect "${r.step}"`, async () => {
-        await reviewEdit(page, r.row).click();
+      await test.step(`Press "Edit ${r.step}" on the summary — expect "${r.step}"`, async () => {
+        await reviewEdit(page, r.step).click();
         await expect(heading(page, r.step)).toBeVisible();
       });
       await test.step(`On "${r.step}": ${r.change}`, () => r.act(page));
@@ -551,7 +556,8 @@ test.describe('A3.1 Step 0 — Basic Info', () => {
     const writes = await blockWrites(page);
     await openWizard(page);
     await fillStep0(page, env);
-    for (const live of [env.testTenant, 'cooper']) {
+    const others = (await tenants(page)).filter((t) => t.status !== 'archived' && t.slug !== env.testTenant).map((t) => t.slug);
+    for (const live of [env.testTenant, ...others.slice(0, 1)]) {
       await test.step(`Type slug "${live}"`, () => page.locator('#slug').fill(live));
       await nextRejected(page, 'Already in use by another tenant.');
     }
@@ -571,7 +577,7 @@ test.describe('A3.1 Step 0 — Basic Info', () => {
   test('SA-WBAS-20 the slug hint and the portal-path preview', async ({ page, env }) => {
     const writes = await blockWrites(page);
     const [ministry] = await freeMinistries(page);
-    const path = page.locator('p', { hasText: 'Portal path' }).locator('code');
+    const path = page.getByRole('group', { name: 'Portal address' }).locator('code');
     await openWizard(page);
     await test.step('Expect the hint "Exactly 6 characters; lowercase letters, numbers and hyphens." and the portal path ending in "…"', async () => {
       await expect(page.getByText('Exactly 6 characters; lowercase letters, numbers and hyphens.', { exact: true })).toBeVisible();
@@ -659,7 +665,8 @@ test.describe('A3.1 Step 0 — Basic Info', () => {
       await expect(heading(page, 'Basic Info')).toBeVisible();
       await expect(page.locator('#adminEmail')).toBeVisible();
       const browser = await page.locator('#adminEmail').evaluate((el: HTMLInputElement) => el.validationMessage);
-      test.info().annotations.push({ type: 'note', description: `Browser validation message: "${browser}".` });
+      const official = await page.getByText(GOI_MSG, { exact: true }).isVisible();
+      test.info().annotations.push({ type: 'note', description: `Browser validation message: "${browser}"; official-email message shown: ${official}.` });
     });
     await nothingSent(writes);
   });
@@ -667,8 +674,8 @@ test.describe('A3.1 Step 0 — Basic Info', () => {
   test('SA-WBAS-27 blank admin fields and Create from step 7 return to step 0 and send nothing', async ({ page, env }) => {
     const writes = await blockWrites(page);
     await toReview(page, env);
-    await test.step('Press Edit on the "Ministry name" row — expect step 0', async () => {
-      await reviewEdit(page, 'Ministry name').click();
+    await test.step('Press "Edit Basic Info" on the summary — expect step 0', async () => {
+      await reviewEdit(page, 'Basic Info').click();
       await expect(heading(page, 'Basic Info')).toBeVisible();
     });
     await test.step('Clear #adminName and #adminEmail', async () => {
@@ -692,6 +699,64 @@ test.describe('A3.1 Step 0 — Basic Info', () => {
       await expect(page.locator('input[type="tel"]')).toHaveCount(0);
       await expect(page.getByRole('textbox', { name: /phone|mobile/i })).toHaveCount(0);
     });
+    await nothingSent(writes);
+  });
+
+  test('SA-WBAS-30 step 0 offers three package cards, Platform + AI Assistant by default', async ({ page }) => {
+    const writes = await blockWrites(page);
+    await openWizard(page);
+    await test.step(`Expect one radio each for ${PACKAGES.join(', ')}, with "${PACKAGES[0]}" checked`, async () => {
+      for (const title of PACKAGES) await expect(packageRadio(page, title)).toHaveCount(1);
+      await expect(packageRadio(page, PACKAGES[0]!)).toBeChecked();
+      for (const title of PACKAGES.slice(1)) await expect(packageRadio(page, title)).not.toBeChecked();
+    });
+    await test.step('Expect each card to carry its "<title> includes" list', async () => {
+      for (const title of PACKAGES) await expect(page.getByRole('list', { name: `${title} includes`, exact: true })).toBeVisible();
+    });
+    await nothingSent(writes);
+  });
+
+  test('SA-WBAS-31 a package choice applies at once, without a confirmation, and survives a reload', async ({ page }) => {
+    const writes = await blockWrites(page);
+    await openWizard(page);
+    for (const title of ['Platform only', 'AI Assistant only']) {
+      await test.step(`Choose "${title}" — expect it checked at once and no "Switch to …?" confirmation`, async () => {
+        await page.getByText(title, { exact: true }).first().click();
+        await expect(packageRadio(page, title)).toBeChecked();
+        await expect(page.getByText(/^Switch to .*\?$/)).toHaveCount(0);
+      });
+    }
+    await test.step('Reload — expect "AI Assistant only" still checked', async () => {
+      await page.reload();
+      await expect(heading(page, 'Basic Info')).toBeVisible();
+      await expect(packageRadio(page, 'AI Assistant only')).toBeChecked();
+    });
+    await nothingSent(writes);
+  });
+
+  test('SA-WBAS-33 a non-official admin email is refused with the official-email message', async ({ page, env }) => {
+    const writes = await blockWrites(page);
+    await openWizard(page);
+    await fillStep0(page, env);
+    for (const email of ['qa.admin@example.com', 'qa.admin@gmail.com', 'qa@evilgov.in', 'qa@gov.in.evil.com', 'qa@nic.in.example.org']) {
+      await test.step(`Set #adminEmail to "${email}"`, () => page.locator('#adminEmail').fill(email));
+      await nextRejected(page, GOI_MSG);
+    }
+    await nothingSent(writes);
+  });
+
+  test('SA-WBAS-34 official domains and their subdomains are accepted', async ({ page, env }) => {
+    const writes = await blockWrites(page);
+    await openWizard(page);
+    await fillStep0(page, env);
+    for (const email of ['qa.admin@gov.in', 'qa.admin@nic.in', 'qa.admin@example.gov.in', 'qa.admin@a.b.nic.in']) {
+      await test.step(`Set #adminEmail to "${email}", press Next — expect step 1; press Back`, async () => {
+        await page.locator('#adminEmail').fill(email);
+        await advance(page, 'Branding');
+        await backButton(page).click();
+        await expect(heading(page, 'Basic Info')).toBeVisible();
+      });
+    }
     await nothingSent(writes);
   });
 });

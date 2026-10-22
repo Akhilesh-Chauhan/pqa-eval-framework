@@ -71,6 +71,14 @@ async function identityProbe(page: Page, slug: string, change: Json, expected: s
 
 const ids = (text: string): string[] => [...text.matchAll(/"id"\s*:\s*"([^"]+)"/g)].map((m) => m[1]!);
 
+/** A4.1 (21 Oct spec): the edit page shows one section at a time; open `name` from its settings menu when it has one. */
+async function openSection(page: Page, name: string): Promise<void> {
+  await page.waitForLoadState('networkidle');
+  const re = new RegExp(`^${name}`, 'i');
+  const entry = page.getByRole('link', { name: re }).or(page.getByRole('button', { name: re })).first();
+  if (await entry.isVisible()) await entry.click();
+}
+
 test.describe('A6 Tenants API', () => {
   test('SA-API-01 success bodies are {data}, errors are {error:{message}}', async ({ page, env }) => {
     for (const path of ['/api/tenants', '/api/ministries', `/api/tenants/${env.testTenant}`]) {
@@ -204,6 +212,50 @@ test.describe('A6 Tenants API', () => {
     });
   });
 
+  test('SA-API-35 create without the LLM credential names the credential field', async ({ page, env }) => {
+    const ministry = (await ministries(page)).find((m) => m.taken);
+    test.skip(!ministry, 'no taken ministry to probe with safely');
+    const cases: Array<[string, (d: Json) => void, string]> = [
+      ['on-prem with no llmApiKey', (d) => delete d.llmApiKey, 'llmApiKey'],
+      ['Bedrock (ap-south-1) with no access or secret key', (d) => {
+        delete d.llmApiKey;
+        d.tenant.assistant = { ...d.tenant.assistant, llm: { ...d.tenant.assistant.llm, provider: 'bedrock', region: 'ap-south-1' } };
+      }, 'bedrockAccessKeyId'],
+    ];
+    for (const [label, change, field] of cases) {
+      const { slug, data } = await createBody(page, env, ministry);
+      change(data);
+      const res = await test.step(`POST /api/tenants body = bundle for taken "${ministry!.name}", slug ${slug}, ${label}`, () => refusedCreate(page, slug, data));
+      await test.step(`Expect 422 Validation failed with field ${field}`, async () => {
+        if (res.status() === 409) {
+          test.info().annotations.push({ type: 'question', description: `${label}: 409 "${await message(res)}" — the ministry claim is checked before the credential.` });
+          return;
+        }
+        expect.soft(res.status()).toBe(422);
+        const err = (await res.json()).error;
+        expect.soft(err?.message).toBe('Validation failed');
+        expect.soft(Object.keys(err?.fields ?? {}).join(' ')).toContain(field);
+      });
+    }
+  });
+
+  test('SA-API-36 create with an unknown package is refused', async ({ page, env }) => {
+    const ministry = (await ministries(page)).find((m) => m.taken);
+    test.skip(!ministry, 'no taken ministry to probe with safely');
+    const { slug, data } = await createBody(page, env, ministry);
+    data.tenant.features = { ...data.tenant.features, package: 'qa-bogus' };
+    const res = await test.step(`POST /api/tenants body = bundle for taken "${ministry!.name}", slug ${slug}, features.package "qa-bogus"`, () => refusedCreate(page, slug, data));
+    await test.step('Expect a refusal naming the allowed packages (spec §3.5)', async () => {
+      test.info().annotations.push({ type: 'question', description: `HTTP ${res.status()} — status code is unspecified` });
+      if (res.status() === 409) {
+        test.info().annotations.push({ type: 'question', description: `409 "${await message(res)}" — the ministry claim is checked before the package.` });
+        return;
+      }
+      expect(res.status()).toBeGreaterThanOrEqual(400);
+      expect.soft(await res.text()).toContain('features.package must be one of: platform_ai, platform, assistant.');
+    });
+  });
+
   test('SA-API-11 update refuses a slug change before the conflict check', async ({ page, env }) => {
     await identityProbe(page, env.testTenant, { slug: 'qazzzz' }, 'Portal slug cannot be changed.');
   });
@@ -301,6 +353,20 @@ test.describe('A6 Tenants API', () => {
     });
   });
 
+  test('SA-API-34 the Bedrock model check refuses a bad body before calling AWS', async ({ page }) => {
+    const cases = [
+      ['body "{bad"', { data: Buffer.from('{bad'), headers: { 'content-type': 'application/json' } }, 'Invalid JSON body'],
+      ['body {}', { data: {} }, 'Access key, secret key, and region are required.'],
+    ] as const;
+    for (const [label, options, expected] of cases) {
+      const res = await test.step(`POST /api/llm/bedrock-models ${label}`, () => page.request.post('/api/llm/bedrock-models', options));
+      await test.step(`Expect 400 ${expected}`, async () => {
+        expect.soft(res.status()).toBe(400);
+        expect.soft(await message(res)).toBe(expected);
+      });
+    }
+  });
+
   test('SA-API-23 sync-source without a url is 400', async ({ page, env }) => {
     const res = await test.step(`POST /api/tenants/${env.testTenant}/sync-source body {}`, () => page.request.post(`/api/tenants/${env.testTenant}/sync-source`, { data: {} }));
     await test.step('Expect 400 A url is required', async () => {
@@ -377,10 +443,10 @@ test.describe('A6 People, divisions and roles', () => {
     const res = await test.step(`GET /api/tenants/${aId}/roles/${roleId}/permissions (${A}'s path, ${B}'s role)`, () =>
       page.request.get(`/api/tenants/${aId}/roles/${roleId}/permissions`),
     );
-    await test.step('Expect a 4xx refusal', async () => {
+    await test.step('Expect 404 Role not found (21 Oct spec A6: the role is checked against the tenant first)', async () => {
       test.info().annotations.push({ type: 'observed', description: `Mixed-id permissions: HTTP ${res.status()}` });
-      expect.soft(res.status()).toBeGreaterThanOrEqual(400);
-      expect.soft(res.status()).toBeLessThan(500);
+      expect.soft(res.status()).toBe(404);
+      expect.soft(await message(res)).toBe('Role not found');
     });
     await test.step(`GET /api/tenants/${A}/departments and /api/tenants/${B}/departments — expect no shared division id`, async () => {
       const aIds = ids(await (await page.request.get(`/api/tenants/${A}/departments`)).text());
@@ -443,8 +509,9 @@ test.describe('E1a Ministry exclusivity', () => {
     await blockWrites(page);
     const T = env.testTenant;
     const { tenant } = await bundle(page, T);
-    await test.step(`Open /tenants/${T}/edit — expect ministry name and slug as text, with no input or dropdown for either`, async () => {
+    await test.step(`Open /tenants/${T}/edit (Basic Info) — expect ministry name and slug as text, with no input or dropdown for either`, async () => {
       await page.goto(`/tenants/${T}/edit`);
+      await openSection(page, 'Basic Info');
       const main = page.getByRole('main');
       await expect(main.getByText(tenant.tenantName, { exact: true }).first()).toBeVisible();
       await expect(main.getByText(T, { exact: true }).first()).toBeVisible();

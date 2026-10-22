@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { classifyUpload, matchResults, meets, multipart } from './ingestion-http.js';
+import { classifyUpload, matchResults, meets, streamResults } from './ingestion-http.js';
 
 test('classifyUpload reads status codes and the first item', () => {
   expect(classifyUpload(400, { detail: 'Unsupported file type' }).outcome).toBe('refuse');
@@ -24,22 +24,17 @@ test('meets: A needs accept, R needs refuse, Q takes refuse or quarantine', () =
   expect([meets('Q', 'refuse'), meets('Q', 'quarantine'), meets('Q', 'accept')]).toEqual([true, true, false]);
 });
 
-test('multipart round-trips through a real form-data parser, with and without a MIME type', async () => {
-  const { body, contentType } = multipart([
-    { filename: 'a "quoted" [1].pdf', mime: 'application/pdf', data: Buffer.from('%PDF-1') },
-    { filename: 'no-mime.pdf', data: Buffer.from([0, 255, 13, 10]) },
-    { filename: 'ठीक line\r\nbreak.pdf', mime: 'application/pdf', data: Buffer.from('x') },
-  ]);
-  expect(body.includes(Buffer.from('filename="ठीक linebreak.pdf"'))).toBe(true); // UTF-8 bytes, no header injection
-  const form = await new Response(new Uint8Array(body), { headers: { 'content-type': contentType } }).formData();
-  const [a, b] = form.getAll('files') as File[];
-  expect(a!.name).toBe('a "quoted" [1].pdf'); // sent as %22, decoded back by the parser
-  expect(body.includes(Buffer.from('filename="a %22quoted%22 [1].pdf"'))).toBe(true);
-  expect(a!.type).toBe('application/pdf');
-  expect(Buffer.from(await a!.arrayBuffer()).toString()).toBe('%PDF-1');
-  expect(b!.type).not.toBe('application/pdf');
-  expect([...Buffer.from(await b!.arrayBuffer())]).toEqual([0, 255, 13, 10]);
-  expect(body.toString('latin1')).not.toMatch(/filename="no-mime\.pdf"\r\nContent-Type/);
+test('streamResults takes each file_done / file_error result from the KB Docs event stream, in file order', () => {
+  const ev = (event: string, data: object) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  const text = ev('init', { total: 2, filenames: ['a.pdf', 'b.pdf'] }) + ev('file_start', { index: 0, filename: 'a.pdf' }) +
+    ev('stage', { index: 0, filename: 'a.pdf', stage: 'classify', step: 5, total_steps: 9 }) +
+    ev('file_error', { index: 1, filename: 'b.pdf', message: 'convert failed' }) +
+    ev('file_done', { index: 0, filename: 'a.pdf', status: 'completed', result: { filename: 'a.pdf', status: 'completed', classification: { document_type: 'acts', confidence: 0.99 } } });
+  const got = streamResults(text);
+  expect(got).toHaveLength(2);
+  expect(got[0]).toMatchObject({ filename: 'a.pdf', status: 'completed', classification: { document_type: 'acts' } });
+  expect(got[1]).toEqual({ filename: 'b.pdf', status: 'failed', error: 'convert failed' });
+  expect(streamResults('event: init\ndata: {"total": 0}\n\n')).toEqual([]);
 });
 
 test('matchResults pairs a batch by position, because quarantined results carry no filename', () => {

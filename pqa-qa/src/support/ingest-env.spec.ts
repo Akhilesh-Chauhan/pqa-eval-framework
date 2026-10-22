@@ -15,6 +15,7 @@ test('golden dir and tenant are optional; the portal sign-in email defaults to t
   expect([e.goldenDir, e.tenant, e.ingestAdminEmail]).toEqual([undefined, undefined, 't@x.gov.in']);
   expect(loadIngestEnv({ ...base, PQA_INGEST_ADMIN_EMAIL: 'p@x.gov.in' }).ingestAdminEmail).toBe('p@x.gov.in');
   expect(portalSessionFile('qi1a2b')).toMatch(/src\/\.auth\/portal-qi1a2b\.json$/);
+  expect(portalSessionFile('qi1a2b', 'checker')).toMatch(/src\/\.auth\/portal-qi1a2b-checker\.json$/);
 });
 
 test('PQA_INGEST_CATEGORY is a comma-separated list; blank means every category', () => {

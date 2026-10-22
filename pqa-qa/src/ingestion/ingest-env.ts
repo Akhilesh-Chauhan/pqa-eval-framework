@@ -6,8 +6,10 @@ import type { AdminEnv } from '../admin/admin-env.js';
 /** Only disposable ingestion tenants: "qi" + 4 hex. Anything else (comind, educat, …) is refused outright. */
 export const SLUG = /^qi[0-9a-f]{4}$/;
 
-/** Saved portal cookies for the disposable tenant. Written by scripts/portal-login.mjs, kept current by the fixtures. */
-export const portalSessionFile = (slug: string): string => join(dirname(fileURLToPath(import.meta.url)), '..', '.auth', `portal-${slug}.json`);
+/** Saved portal cookies for the disposable tenant: its admin (the maker), or `role` such as the checker. Written by
+ * scripts/portal-login.mjs, kept current by the fixtures. */
+export const portalSessionFile = (slug: string, role?: string): string =>
+  join(dirname(fileURLToPath(import.meta.url)), '..', '.auth', `portal-${slug}${role ? `-${role}` : ''}.json`);
 
 export interface IngestEnv extends AdminEnv {
   /** PQA_GOLDEN_DIR — the dataset folder; tests skip when unset. */

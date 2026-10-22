@@ -47,8 +47,10 @@ test.describe('category and metadata', () => {
       test.setTimeout(2 * 330_000 + 120_000); // the route may take its full 300 s, twice
       await touchAdmin(page);
       const files = batch.map((r) => ({ filename: r.upload_name, mime: 'application/pdf', data: readFileSync(join(golden!.dir, r.file)) }));
-      let res = await upload(portal, ienv.portalUrl, ienv.tenant!, 'ingestion', files);
-      if (res.status >= 500 || res.status === 0) res = await upload(portal, ienv.portalUrl, ienv.tenant!, 'ingestion', files);
+      // KB Docs ("Ingest documents"), the user-facing upload: after Clear All Documents a file is accepted again there,
+      // while Settings → Ingestion keeps calling it a duplicate (22 Oct).
+      let res = await upload(portal, ienv.portalUrl, ienv.tenant!, 'file-ingestions', files);
+      if (res.status >= 500 || res.status === 0) res = await upload(portal, ienv.portalUrl, ienv.tenant!, 'file-ingestions', files);
       const items: any[] = Array.isArray(res.body?.results) ? res.body.results : [];
       const matched = matchResults(batch.map((r) => r.upload_name), items);
       for (const [i, r] of batch.entries()) {

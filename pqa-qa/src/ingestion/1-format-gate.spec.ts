@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { notMeasured } from '../support/annotations.js';
 import { loadGolden } from '../support/golden-manifest.js';
 import type { GateResult } from '../support/ingestion-scoring.js';
 import { classifyUpload, meets } from '../support/ingestion-http.js';
@@ -55,6 +56,8 @@ test.describe('format gate', () => {
           const data = readFileSync(join(golden!.dir, c.file));
           const res = await upload(portal, ienv.portalUrl, ienv.tenant!, route, [{ filename: c.upload_name, mime: mime ?? undefined, data }]);
           const { outcome, detail } = classifyUpload(res.status, res.body);
+          // Settings → Ingestion keeps a cleared file's fingerprint (22 Oct): a duplicate says nothing about the policy.
+          if (outcome === 'duplicate') return notMeasured(testInfo, { tracker: 'ingestion-dedup-after-clear', owner: 'dev', detail: `${route}: same bytes already ingested; Clear All Documents does not reset it` });
           store.put(`gate-${setup.id}-${route}-${c.id}`, { id: c.id, setup: setup.id, route, expect: want, outcome } satisfies GateResult);
           // The next case may send the same bytes; unless the file was refused outright (an error or a timeout may still
           // have indexed it), clear, or the next upload would come back "duplicate".

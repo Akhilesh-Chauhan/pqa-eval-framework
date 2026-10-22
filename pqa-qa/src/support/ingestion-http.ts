@@ -1,4 +1,3 @@
-import { randomBytes } from 'node:crypto';
 import type { Expect } from './golden-manifest.js';
 
 /** What one uploaded file came to. "duplicate" means the tenant's documents were not cleared first. */
@@ -40,21 +39,21 @@ export function meets(expect: Expect, outcome: Outcome): boolean {
 
 export interface FilePart {
   filename: string;
-  /** Omitted = the part carries no Content-Type (case F15). */
+  /** Omitted = no declared type (case F15): sent as an empty MIME type, as a browser does for an unknown file. */
   mime?: string;
   data: Buffer;
 }
 
-/** multipart/form-data with every file under "files". Built by hand because Playwright's multipart option
- * always sends a Content-Type, and F15 needs a part without one. */
-export function multipart(files: FilePart[]): { body: Buffer; contentType: string } {
-  const boundary = `----pqaqa${randomBytes(12).toString('hex')}`;
-  // RFC 7578 §4.2: percent-encode quotes and drop line breaks so a filename cannot end its header.
-  const safe = (s: string) => s.replace(/"/g, '%22').replace(/[\r\n]/g, '');
-  const parts = files.flatMap((f) => [
-    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="${safe(f.filename)}"\r\n${f.mime ? `Content-Type: ${f.mime}\r\n` : ''}\r\n`),
-    f.data,
-    Buffer.from('\r\n'),
-  ]);
-  return { body: Buffer.concat([...parts, Buffer.from(`--${boundary}--\r\n`)]), contentType: `multipart/form-data; boundary=${boundary}` };
+/** The KB Docs stream (POST …/file-ingestions/batch-stream, server-sent events): each file's `file_done` (or
+ * `file_error`) event carries the same result object the JSON batch route returns. Results come back in file order. */
+export function streamResults(text: string): any[] {
+  const out: any[] = [];
+  for (const block of text.split(/\r?\n\r?\n/)) {
+    const event = /^event: ?(.*)$/m.exec(block)?.[1]?.trim();
+    const data = [...block.matchAll(/^data: ?(.*)$/gm)].map((m) => m[1]).join('\n');
+    if ((event !== 'file_done' && event !== 'file_error') || !data) continue;
+    const d = JSON.parse(data);
+    out[typeof d.index === 'number' ? d.index : out.length] = d.result ?? { filename: d.filename, status: d.status ?? 'failed', error: d.error ?? d.message };
+  }
+  return out;
 }

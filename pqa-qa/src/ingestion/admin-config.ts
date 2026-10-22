@@ -15,17 +15,26 @@ export async function touchAdmin(page: Page): Promise<void> {
 
 const message = async (res: { json(): Promise<any> }): Promise<string> => String((await res.json().catch(() => ({})))?.error?.message ?? '');
 
+function setKey(o: unknown, key: string, value: unknown): void {
+  if (o && typeof o === 'object') for (const [k, v] of Object.entries(o)) (k === key ? ((o as Record<string, unknown>)[k] = value) : setKey(v, key, value));
+}
+
 /** Saves the setup's file rules through the edit page's own Save configuration body (captured with the PATCH
- * aborted, then sent with the rules replaced), checks them, waits out both caches, and records the setup as live. */
+ * aborted, then sent with the rules replaced), checks them, waits out both caches, and records the setup as live.
+ * Save is disabled until something changes (live build, 22 Oct): it toggles the accessibility bar to capture the body,
+ * then puts the stored value back in it. */
 export async function applySetup(page: Page, slug: string, setup: Setup): Promise<void> {
-  const body = await test.step(`Open /tenants/${slug}/edit; capture the Save configuration body (PATCH aborted, nothing written)`, async () => {
-    await page.goto(`/tenants/${slug}/edit`);
+  const body = await test.step(`Open /tenants/${slug}/edit (Basic Info); toggle Accessibility bar; capture the Save configuration body with the stored value put back (PATCH aborted, nothing written)`, async () => {
+    const bar: boolean = (await (await page.request.get(`/api/tenants/${slug}`)).json()).data.tenant.features?.accessibilityBar ?? true;
+    await page.goto(`/tenants/${slug}/edit?tab=config&section=basic`);
     await expect(page.getByRole('button', { name: 'Save configuration' })).toBeVisible();
+    await page.getByRole('switch', { name: 'Accessibility bar' }).click();
     await page.route(`**/api/tenants/${slug}`, (r) => (r.request().method() === 'PATCH' ? r.abort() : r.continue()));
     const req = page.waitForRequest((r) => r.method() === 'PATCH' && r.url().endsWith(`/api/tenants/${slug}`));
     await page.getByRole('button', { name: 'Save configuration' }).click();
     const captured = (await req).postDataJSON();
     await page.unroute(`**/api/tenants/${slug}`);
+    setKey(captured, 'accessibilityBar', bar);
     return captured;
   });
   await test.step(`PATCH /api/tenants/${slug}: ${setup.id} = ${setup.types.join(', ')}, max ${setup.maxMb} MB (one retry on 409)`, async () => {

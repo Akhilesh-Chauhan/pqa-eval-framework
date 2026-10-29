@@ -5,20 +5,29 @@ import { z } from 'zod';
 
 /** The golden ingestion dataset (PQA Builder/qa/golden/ingestion, built by its build/run.py). */
 
-export const DOC_TYPES = ['parliamentary_qa', 'acts', 'schemes', 'orders', 'press_releases', 'others'] as const;
+// The live classifier's 13 types (23 Oct 2026; the six of 13 Oct plus seven dedicated ones).
+export const DOC_TYPES = ['parliamentary_qa', 'acts', 'bills', 'schemes', 'orders', 'press_releases', 'others', 'circular', 'corrigendum',
+  'public_notice', 'resolution', 'gazette_notification', 'advisory'] as const;
 export type DocType = (typeof DOC_TYPES)[number];
 export const SETUP_IDS = ['P1', 'P2', 'P3', 'P4'] as const;
 export type SetupId = (typeof SETUP_IDS)[number];
 export type Expect = 'A' | 'R' | 'Q';
 
-/** Classifier fields per type (ingestion-service models/document_types.py) plus the combined "Ministry / Department". */
+/** Classifier fields per type, as the live classifier returns them (23 Oct), plus the combined "Ministry / Department". */
 export const TYPE_FIELDS: Record<DocType, readonly string[]> = {
   parliamentary_qa: ['authority', 'ministry', 'department', 'ministry_or_department', 'house', 'question_type', 'answered_on', 'topic', 'diary_number', 'members', 'answering_minister'],
   acts: ['title', 'act_number', 'date', 'subject'],
+  bills: ['title', 'bill_number', 'house', 'date', 'purpose', 'source'],
   schemes: ['authorizing_body', 'details', 'eligibility', 'benefits', 'exclusions', 'application_process', 'documents_required', 'faqs'],
   orders: ['file_number', 'ministry', 'department', 'ministry_or_department', 'date', 'subject', 'issuing_officer'],
   press_releases: ['issued_by', 'date', 'subject', 'posted_by', 'release_id'],
   others: ['document_title', 'date', 'subject', 'issuing_authority', 'summary'],
+  circular: ['reference_number', 'ministry', 'department', 'ministry_or_department', 'date', 'subject', 'source'],
+  corrigendum: ['reference_number', 'ministry', 'department', 'ministry_or_department', 'date', 'subject', 'source'],
+  public_notice: ['file_number', 'ministry', 'department', 'ministry_or_department', 'date', 'subject', 'source'],
+  resolution: ['reference_number', 'ministry', 'department', 'ministry_or_department', 'date', 'subject', 'source'],
+  gazette_notification: ['date', 'issuing_authority', 'gazette_type', 'section', 'registration_number', 'subject', 'e_gazette_id'],
+  advisory: ['reference_number', 'issuing_authority', 'issuing_section', 'location', 'date', 'subject', 'target_audience', 'signatory', 'attached_reference'],
 };
 
 const E = z.enum(['A', 'R', 'Q']);

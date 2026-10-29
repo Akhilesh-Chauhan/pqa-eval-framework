@@ -8,6 +8,7 @@ import type { Outcome } from './ingestion-http.js';
 export type FieldKind = 'id' | 'date' | 'text' | 'list' | 'long';
 const KIND: Record<string, FieldKind> = {
   file_number: 'id', act_number: 'id', release_id: 'id', diary_number: 'id',
+  bill_number: 'id', reference_number: 'id', registration_number: 'id', e_gazette_id: 'id',
   date: 'date', answered_on: 'date',
   members: 'list', documents_required: 'list',
   details: 'long', eligibility: 'long', benefits: 'long', exclusions: 'long', application_process: 'long', faqs: 'long', summary: 'long',

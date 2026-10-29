@@ -42,3 +42,10 @@ pqa-qa/src/.auth/
 # Failure evidence: screenshots of a live environment and repro notes
 pqa-qa/evidence/
 pqa-qa/reports/
+
+# pqa-qa — AI assistant evaluation outputs and local Python environments
+pqa-qa/runs/
+pqa-qa/mlruns/
+pqa-qa/eval/.venv/
+pqa-qa/eval/.venv-mlflow/
+pqa-qa/eval/.env

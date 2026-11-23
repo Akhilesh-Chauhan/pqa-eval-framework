@@ -75,6 +75,21 @@ export default defineConfig({
       workers: 1,
       use: { baseURL: process.env.PQA_ADMIN_URL, storageState: SESSION_FILE },
     },
+    // UI/UX design conformance: cases written only from the shared design's FINAL page (PQA Builder/qa/design-test-cases.md, DS-*).
+    // Portal personas sign in once each with `npm run qa:design:login -- <persona>`; a persona without a saved
+    // session reports "not measured". One session per persona whose refresh cookie rotates: one worker.
+    {
+      name: 'design-session',
+      testDir: './src/design',
+      testMatch: /session\.setup\.ts$/,
+    },
+    {
+      name: 'design-portal',
+      testDir: './src/design/portal',
+      testMatch: /.*\.spec\.ts$/,
+      dependencies: ['design-session'],
+      workers: 1,
+    },
     // AI Assistant ingestion golden dataset (PQA Builder/qa/specs/2026-10-13-golden-ingestion-dataset-design.md).
     // Writes only to the disposable tenant PQA_INGEST_TENANT (qi + 4 hex). Order: provision → ingestion → retire.
     // Defined only for the qa:ingest* scripts (PQA_INGEST=1): a plain `npm run qa` must never start a multi-hour

@@ -1,0 +1,630 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "PQA Evaluation Framework v0.2 — test suites, AI Assistant evaluation and the live platform (23 Nov 2026)",
+    "output": ".archify/architecture-pqa-eval-framework-20261123-162550/pqa-evaluation-framework.html",
+    "quality_profile": "showcase"
+  },
+  "components": [
+    {
+      "id": "session",
+      "type": "security",
+      "label": "Saved sessions",
+      "sublabel": "*-login.mjs → src/.auth/",
+      "tag": "OTP typed by owner",
+      "pos": [
+        350,
+        40
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "team",
+      "type": "external",
+      "label": "Platform team",
+      "sublabel": "ingests the MeitY replies",
+      "pos": [
+        930,
+        40
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "admin-report",
+      "type": "database",
+      "label": "Admin report",
+      "sublabel": "reports/<run>/ · qa:share",
+      "pos": [
+        60,
+        170
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "admin-suite",
+      "type": "backend",
+      "label": "Super Admin suite",
+      "sublabel": "src/admin · SA-* cases",
+      "pos": [
+        350,
+        170
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "admin",
+      "type": "frontend",
+      "label": "Super Admin panel",
+      "sublabel": "pqa-admin.myscheme.in",
+      "pos": [
+        640,
+        170
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "golden-ingest",
+      "type": "database",
+      "label": "Ingestion golden set",
+      "sublabel": "qa/golden/ingestion",
+      "pos": [
+        350,
+        300
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "ingest-summary",
+      "type": "database",
+      "label": "Ingestion results",
+      "sublabel": "ingestion-summary.json",
+      "pos": [
+        60,
+        430
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "ingest-suite",
+      "type": "backend",
+      "label": "Ingestion suite",
+      "sublabel": "src/ingestion · 13 types",
+      "tag": "disposable tenant",
+      "pos": [
+        350,
+        430
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "ingest-api",
+      "type": "backend",
+      "label": "Ingestion service",
+      "sublabel": "api/file-ingestions",
+      "pos": [
+        640,
+        430
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "index",
+      "type": "database",
+      "label": "Tenant knowledge base",
+      "sublabel": "MeitY · 2,250 replies",
+      "pos": [
+        930,
+        430
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "design-cases",
+      "type": "database",
+      "label": "Design test cases",
+      "sublabel": "qa/design-test-cases.md",
+      "tag": "FINAL page only",
+      "pos": [
+        350,
+        560
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "design-report",
+      "type": "database",
+      "label": "Design report",
+      "sublabel": "reports/<run>/ · DS status",
+      "pos": [
+        60,
+        690
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "design-suite",
+      "type": "backend",
+      "label": "Design suite",
+      "sublabel": "src/design · 3 personas",
+      "pos": [
+        350,
+        690
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "portal",
+      "type": "frontend",
+      "label": "Tenant portal",
+      "sublabel": "pqa.myscheme.in/<slug>",
+      "pos": [
+        640,
+        690
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "di-raw",
+      "type": "database",
+      "label": "DI run",
+      "sublabel": "runs/di/<run>/raw.jsonl",
+      "pos": [
+        60,
+        820
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "di-recorder",
+      "type": "backend",
+      "label": "DI recorder",
+      "sublabel": "scripts/di-record.mjs",
+      "tag": "live run pending",
+      "pos": [
+        350,
+        820
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "di-service",
+      "type": "backend",
+      "label": "Document Intelligence",
+      "sublabel": "upload · route · draft",
+      "pos": [
+        640,
+        820
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "di-scorer",
+      "type": "backend",
+      "label": "DI scorer",
+      "sublabel": "extract_outputs → score_di",
+      "pos": [
+        60,
+        950
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "assistant-golden",
+      "type": "database",
+      "label": "Assistant golden sets",
+      "sublabel": "115 questions · 86 searches",
+      "pos": [
+        350,
+        1080
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "capture",
+      "type": "backend",
+      "label": "Capture",
+      "sublabel": "Generate reply + Search",
+      "pos": [
+        350,
+        1210
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "assistant-api",
+      "type": "backend",
+      "label": "AI Assistant API",
+      "sublabel": "chat/stream (SSE) · /search",
+      "pos": [
+        640,
+        1210
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "captured",
+      "type": "database",
+      "label": "Captured answers",
+      "sublabel": "data/artifacts/",
+      "pos": [
+        350,
+        1340
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "tenant-llm",
+      "type": "cloud",
+      "label": "Assistant LLM",
+      "sublabel": "Claude Sonnet 5",
+      "pos": [
+        640,
+        1340
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "combined-report",
+      "type": "database",
+      "label": "Combined report",
+      "sublabel": "one HTML · both modes",
+      "pos": [
+        60,
+        1470
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "scorer",
+      "type": "backend",
+      "label": "Scorer",
+      "sublabel": "cli.py · score_search.py",
+      "pos": [
+        350,
+        1470
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "judge",
+      "type": "cloud",
+      "label": "AWS Bedrock judge",
+      "sublabel": "Claude Sonnet 5 · Titan V2",
+      "tag": "ap-south-1",
+      "pos": [
+        350,
+        1600
+      ],
+      "size": [
+        180,
+        64
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "pqa-qa (this repo) — Playwright suites",
+      "wraps": [
+        "session",
+        "admin-report",
+        "admin-suite",
+        "golden-ingest",
+        "ingest-summary",
+        "ingest-suite",
+        "design-cases",
+        "design-report",
+        "design-suite",
+        "di-raw",
+        "di-recorder"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "PQA_Chabot_Evaluation (companion repo)",
+      "wraps": [
+        "capture",
+        "captured",
+        "scorer",
+        "combined-report"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "Live shared environment",
+      "wraps": [
+        "admin",
+        "ingest-api",
+        "index",
+        "portal",
+        "di-service",
+        "assistant-api",
+        "tenant-llm"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "session-cookies",
+      "from": "session",
+      "to": "admin-suite",
+      "label": "cookies",
+      "variant": "security"
+    },
+    {
+      "id": "admin-ui-api",
+      "from": "admin-suite",
+      "to": "admin",
+      "label": "UI + API",
+      "variant": "emphasis"
+    },
+    {
+      "id": "admin-results",
+      "from": "admin-suite",
+      "to": "admin-report",
+      "label": "results",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "id": "ingest-files",
+      "from": "golden-ingest",
+      "to": "ingest-suite",
+      "label": "89 files"
+    },
+    {
+      "id": "ingest-upload",
+      "from": "ingest-suite",
+      "to": "ingest-api",
+      "label": "uploads",
+      "variant": "emphasis"
+    },
+    {
+      "id": "ingest-scores",
+      "from": "ingest-suite",
+      "to": "ingest-summary",
+      "label": "scores",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "id": "ingest-index",
+      "from": "ingest-api",
+      "to": "index",
+      "label": "indexes"
+    },
+    {
+      "id": "team-ingests",
+      "from": "team",
+      "to": "index",
+      "label": "ingests",
+      "variant": "dashed"
+    },
+    {
+      "id": "design-read",
+      "from": "design-cases",
+      "to": "design-suite",
+      "label": "cases"
+    },
+    {
+      "id": "design-ui",
+      "from": "design-suite",
+      "to": "portal",
+      "label": "drives UI",
+      "variant": "emphasis"
+    },
+    {
+      "id": "design-results",
+      "from": "design-suite",
+      "to": "design-report",
+      "label": "results",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "id": "di-record",
+      "from": "di-recorder",
+      "to": "di-service",
+      "label": "records API",
+      "variant": "emphasis"
+    },
+    {
+      "id": "di-write",
+      "from": "di-recorder",
+      "to": "di-raw",
+      "label": "raw.jsonl",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "id": "di-score",
+      "from": "di-raw",
+      "to": "di-scorer",
+      "label": "scores"
+    },
+    {
+      "id": "golden-questions",
+      "from": "assistant-golden",
+      "to": "capture",
+      "label": "questions"
+    },
+    {
+      "id": "capture-ask",
+      "from": "capture",
+      "to": "assistant-api",
+      "label": "asks (SSE)",
+      "variant": "emphasis"
+    },
+    {
+      "id": "index-retrieval",
+      "from": "index",
+      "to": "assistant-api",
+      "label": "retrieval",
+      "fromSide": "bottom",
+      "toSide": "right"
+    },
+    {
+      "id": "assistant-llm",
+      "from": "assistant-api",
+      "to": "tenant-llm",
+      "label": "generates"
+    },
+    {
+      "id": "capture-write",
+      "from": "capture",
+      "to": "captured",
+      "label": "writes"
+    },
+    {
+      "id": "run-score",
+      "from": "captured",
+      "to": "scorer",
+      "label": "scores"
+    },
+    {
+      "id": "scorer-report",
+      "from": "scorer",
+      "to": "combined-report",
+      "label": "report",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "id": "scorer-judge",
+      "from": "scorer",
+      "to": "judge",
+      "label": "judges",
+      "variant": "dashed"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Run order, one command each",
+      "items": [
+        "Super Admin: npm run qa:admin:login → qa:admin → qa:share",
+        "Ingestion: qa:ingest:provision → qa:ingest → qa:ingest:retire (disposable tenant)",
+        "Design: qa:design:login -- executive|parliament|division → qa:design; qa:pipeline = typecheck + unit + design",
+        "Document Intelligence: qa:di:record -- parliament|division → extract_outputs.py → score_di.py",
+        "AI Assistant: capture_new_chatbot.py / capture_search.py → cli.py → build_combined_report.py"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Results so far",
+      "items": [
+        "Super Admin: 398 pass, 20 fail, 16 skip (final run, 22–26 Oct)",
+        "Ingestion golden run: type accuracy 0.907, metadata 0.665 across 13 types",
+        "Generate reply, 115 questions: overall 0.75 with the reply ingested, 0.71 without; faithfulness 0.99 / 0.98",
+        "Search, 40 queries: 18 of 25 ingested queries passed; the withheld reply was never returned (0 of 8)"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Changed since v0.1 (29 Oct)",
+      "items": [
+        "The vendored Ragas scorer and MLflow plan are replaced by PQA_Chabot_Evaluation: RAGAS + MeitY judges on Claude Sonnet 5",
+        "AI Assistant Search mode is evaluated next to Generate reply, in one combined report",
+        "New: design conformance suite (DS-* cases) and the Document Intelligence recorder",
+        "score_di.py can export DI drafts as PQA_Chabot_Evaluation rows, so the same judges score drafting"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Shared inputs",
+      "items": [
+        "Golden sets and test catalogues live in PQA Builder/qa/, outside this repo",
+        "Design AI-quality cases read the assistant golden sets (PQA_DESIGN_GOLDEN_ROOT)",
+        "The DI recorder reuses the design-suite sessions; sign-in responses are never recorded",
+        "Rajya Sabha session 271 is held out of the knowledge base to test answers without the document"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Rules",
+      "items": [
+        "One Playwright process at a time; one process per saved session",
+        "Writes only on a QA-owned disposable tenant (PQA_*_ALLOW_WRITES=true)",
+        "Monsoon 2026 answer documents are never uploaded: they are the holdout",
+        "Design cases come only from the shared design's FINAL page",
+        "Judge cost is reported, never gated"
+      ]
+    }
+  ]
+}

@@ -28,15 +28,16 @@ export interface Catalogue {
   areas: Map<string, string>;
 }
 
-/** Reads `## AREA — Name` headings and `| SA-… |` rows of the catalogue markdown. */
+/** Reads `## AREA — Name` headings and `| SA-… |` / `| DS-… |` rows of the catalogue markdown
+ * (the Super Admin catalogue, or the design catalogue whose headings read `## DS-AREA — Name`). */
 export function parseCatalogue(md: string): Catalogue {
   const cases = new Map<string, CatalogueCase>();
   const areas = new Map<string, string>();
   const clean = (s = ''): string => s.replace(/<br>/g, ' ').replace(/`/g, '').replace(/\*\*/g, '').replace(/\\\|/g, '|').trim();
   for (const line of md.split('\n')) {
-    const heading = /^## ([A-Z]+) — (.+)$/.exec(line);
+    const heading = /^## (?:DS-)?([A-Z0-9]+) — (.+)$/.exec(line);
     if (heading) areas.set(heading[1] as string, clean(heading[2]));
-    if (!line.startsWith('| SA-')) continue;
+    if (!/^\| (?:SA|DS)-/.test(line)) continue;
     const c = line.split(/(?<!\\)\|/).map((x) => x.trim());
     const id = c[1] as string;
     cases.set(id, {
@@ -153,7 +154,7 @@ export function renderReport(
         ? `<ol class="steps">${r.steps.map((s) => `<li class="${s.ok ? 'ok' : 'ko'}"><span class="si">${s.ok ? '✓' : '✕'}</span> ${esc(s.title)} <span class="ms">${dur(s.ms)}</span>${s.error ? `<pre>${esc(s.error)}</pre>` : ''}</li>`).join('')}</ol>`
         : '';
       return `<details class="test" data-status="${r.bucket}" data-area="${esc(areaOf(r))}" data-text="${esc(text)}"${r.bucket === 'fail' ? ' open' : ''}>
-<summary><span class="badge ${r.bucket}">${BUCKETS[r.bucket].icon} ${BUCKETS[r.bucket].label}</span>${r.id ? `<code>${esc(r.id)}</code>` : ''}<span class="t">${esc(r.title.replace(/^SA-[A-Z]+-\d+\s*/, ''))}</span><span class="grp">${esc(r.group)}</span><span class="ms">${dur(r.ms)}</span></summary>
+<summary><span class="badge ${r.bucket}">${BUCKETS[r.bucket].icon} ${BUCKETS[r.bucket].label}</span>${r.id ? `<code>${esc(r.id)}</code>` : ''}<span class="t">${esc(r.title.replace(/^(?:SA|DS)-[A-Z0-9]+-\d+\s*/, ''))}</span><span class="grp">${esc(r.group)}</span><span class="ms">${dur(r.ms)}</span></summary>
 <div class="body">
 ${cc ? `<div class="cat"><span class="chip">${esc(cc.pri)}</span><span class="chip">${esc(cc.type)}</span><span class="chip">Catalogue: ${esc(cc.run)}</span><p><b>Catalogue title:</b> ${esc(cc.title)}</p><p><b>Expected:</b> ${esc(cc.expected)}</p></div>` : ''}
 ${r.notes.map((n) => `<p class="note">${esc(n)}</p>`).join('')}

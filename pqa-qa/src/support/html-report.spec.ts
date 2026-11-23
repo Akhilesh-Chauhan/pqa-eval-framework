@@ -21,6 +21,16 @@ test('parseCatalogue reads areas and rows, unescaping cells', () => {
   expect(cat.cases.get('SA-WBAS-11')?.title).toBe('Slug a|b');
 });
 
+test('parseCatalogue reads the design catalogue (DS- headings and rows)', () => {
+  const cat = parseCatalogue([
+    '## DS-EXAI — Executive AI Assistant (design)',
+    '| ID | Title | Pri | Type | Persona & preconditions | Steps | Expected | Run | Board |',
+    '| DS-EXAI-01 | Welcome shows two choices | P1 | Functional | EXECUTIVE | 1. Open. | `What do you want to do?` | Auto | ExecAIAssistant.dc.html |',
+  ].join('\n'));
+  expect(cat.areas.get('EXAI')).toBe('Executive AI Assistant (design)');
+  expect(cat.cases.get('DS-EXAI-01')).toMatchObject({ area: 'EXAI', expected: 'What do you want to do?', run: 'Auto' });
+});
+
 test('renderReport counts outcomes, escapes text and lists coverage', () => {
   const row = (id: string, bucket: Row['bucket']): Row => ({
     id, title: `${id} <b>x</b>`, group: 'g', project: 'admin', bucket, ms: 10, steps: [], errors: [], notes: [], shots: [],

@@ -15,6 +15,27 @@ that tenant's knowledge base.
 
 ![PQA Evaluation Framework v0.2 architecture](docs/architecture/pqa-evaluation-framework.png)
 
+**How to read it.** The diagram has three regions: this repo's suites at the top left, the companion
+PQA_Chabot_Evaluation at the bottom left, and the live platform they test on the right. Each row is one suite: what
+it reads is above it, the results it writes are to its left, and the part of the platform it drives is to its right.
+Solid arrows are calls and data the framework handles itself. Dashed arrows are indirect: the sign-in cookies, the
+judge calls and the platform team's ingestion. The box colour gives its kind: green for suites and services, purple
+for data and reports, blue for screens, orange for language models, red for sign-in and grey for people outside the
+framework.
+
+**How it helps.**
+
+- **Getting started:** one picture shows which suite tests which part of the platform and where each one writes its
+  results.
+- **Before a run:** follow the arrows into a suite to see what it needs first, such as a saved session and its golden
+  set or test catalogue.
+- **When the platform changes:** start at the changed part on the right and follow the arrows back to the suites it
+  touches. A change to the ingestion service, for example, reaches the ingestion suite directly and the AI Assistant's
+  answers through the knowledge base, so both are worth running again.
+- **Reading results:** the box to the left of each suite names the report to open.
+
+Files:
+
 - Interactive version: [docs/architecture/pqa-evaluation-framework.html](docs/architecture/pqa-evaluation-framework.html).
   Download it and open it in a browser to pan, zoom, search and read the cards (run order, results, rules).
 - Source: [pqa-evaluation-framework.archify.json](docs/architecture/pqa-evaluation-framework.archify.json), made
@@ -51,13 +72,39 @@ The golden sets, test catalogues and the design snapshot live in the `PQA Builde
 ![Graph of the shared UI/UX design](docs/design-graph/design-graph.png)
 
 A knowledge graph of the shared UI/UX design (snapshot of 20 Nov 2026), made with
-[graphify](https://github.com/Graphify-Labs/graphify): 372 nodes, 811 edges and 20 communities from 18 design files.
-The design suite's `DS-*` cases were written from this design.
+[graphify](https://github.com/Graphify-Labs/graphify) from 18 files: the design's FINAL screens and notes, and the
+design test-case catalogue the design suite runs. It has 372 nodes, 811 links and 20 communities.
+
+**How to read it.**
+
+- **Nodes:** 268 are `DS-*` test cases and their areas. The rest are screens, controls and design notes.
+- **Links:** each test case is joined to its area and to the screen or control it checks, and each screen to its
+  parts.
+- **Colours:** each one is a community, a group of closely linked nodes, such as Executive Dashboard Cases, Generate
+  Reply Answers or Search Documents Answers. The interactive page lists them with their sizes.
+- **Size:** bigger dots have more links. The most connected ones are listed as "god nodes" in the report.
+
+**How it helps.**
+
+- **Finding the cases for a screen:** click a screen in the interactive graph, or ask graphify, to see every `DS-*`
+  case that checks it.
+- **When the design changes:** the changed screen's neighbours are the cases to review. The most connected screens
+  (the dashboards, the question-detail final review and the AI Assistant) affect the most cases.
+- **Spotting gaps:** a part of the design that no test case links to is worth a second look.
+- **Asking questions:** with graphify installed, from the repo root:
+
+  ```bash
+  graphify query "which test cases check Search documents" --graph docs/design-graph/graph.json
+  graphify explain "Button system (UX4G 3.0 buttons in Indigo Ink)" --graph docs/design-graph/graph.json
+  ```
+
+Files:
 
 - Interactive version: [docs/design-graph/graph.html](docs/design-graph/graph.html). Download it and open it in a
   browser; it loads vis-network from unpkg, so it needs an internet connection.
 - Report: [docs/design-graph/GRAPH_REPORT.md](docs/design-graph/GRAPH_REPORT.md), with the communities and the most
   connected screens.
+- Graph data for graphify: [docs/design-graph/graph.json](docs/design-graph/graph.json).
 
 ## Setup
 

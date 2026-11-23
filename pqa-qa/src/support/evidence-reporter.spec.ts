@@ -37,3 +37,8 @@ test('testId also reads golden-dataset ids', () => {
   expect(testId('GI-CAT-023 category Circular → orders')).toBe('GI-CAT-023');
   expect(testId('GI-FMT-03 format gate P2 ingestion: office-memo.docx → accept')).toBe('GI-FMT-03');
 });
+
+test('testId reads design-catalogue ids, including areas with digits', () => {
+  expect(testId('DS-EXAI-04 Clear chat asks first')).toBe('DS-EXAI-04');
+  expect(testId('DS-W4-02 assistant opens beside the question')).toBe('DS-W4-02');
+});

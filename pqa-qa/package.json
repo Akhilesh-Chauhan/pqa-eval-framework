@@ -12,6 +12,11 @@
     "qa:admin:login": "node --env-file=.env scripts/admin-login.mjs",
     "qa:admin": "playwright test --project=admin-public --project=admin",
     "qa:share": "node scripts/share-report.mjs",
+    "qa:design:login": "node --env-file=.env scripts/design-login.mjs",
+    "qa:design": "playwright test --project=design-portal",
+    "qa:design:labels": "playwright test --project=unit src/support/design-labels.spec.ts",
+    "qa:pipeline": "npm run typecheck && npm run qa:unit && npm run qa:design",
+    "qa:di:record": "node --env-file=.env scripts/di-record.mjs",
     "qa:ingest:provision": "PQA_INGEST=1 playwright test --project=ingestion-provision && node --env-file=.env scripts/portal-login.mjs",
     "qa:ingest": "PQA_INGEST=1 playwright test --project=ingestion",
     "qa:ingest:retire": "PQA_INGEST=1 playwright test --project=ingestion-retire"
